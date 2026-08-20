@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+.kotlin/
+gradle.properties
+*.jks
+*.keystore
+*.apk
+*.aab
+app/src/test/resources/fixture.qtvault
