@@ -8,6 +8,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import org.qterm.android.vault.KNOWN_VAULT_KEYS
+import org.qterm.android.vault.LOCAL_ONLY_KEYS
 import org.qterm.android.vault.SyncConfig
 import org.qterm.android.vault.VaultData
 import org.qterm.android.vault.VaultJson
@@ -85,30 +89,34 @@ object SyncEngine {
             }
 
             // pull (терпимо к числовым датам Swift JSONEncoder)
-            val remote: VaultData? = transport.get()?.let {
+            val summary = transport.get()?.let {
                 val raw = SyncCrypto.decrypt(it, cfg.cryptPassword).toString(Charsets.UTF_8)
-                VaultJson.decodeFromJsonElement(
-                    VaultData.serializer(),
-                    normalizeAppleDates(VaultJson.parseToJsonElement(raw)),
-                )
-            }
+                val obj = normalizeAppleDates(VaultJson.parseToJsonElement(raw)) as? JsonObject
+                    ?: error("облачный блоб — не объект JSON")
+                // поля, которых эта версия не знает, — сохранить и вернуть при пуше
+                val foreign = obj.filterKeys { it !in KNOWN_VAULT_KEYS && it !in LOCAL_ONLY_KEYS }
+                val known = JsonObject(obj.filterKeys { it in KNOWN_VAULT_KEYS && it !in LOCAL_ONLY_KEYS })
+                val remote = VaultJson.decodeFromJsonElement(VaultData.serializer(), known)
+                VaultRepo.applySyncMerge(remote, foreign)
+            } ?: "первый пуш"
 
-            // merge
-            val summary = if (remote != null) VaultRepo.applySyncMerge(remote) else "первый пуш"
-
-            // push
-            val snapshot = VaultRepo.snapshotForSync()
-            val blob = SyncCrypto.encrypt(
-                VaultJson.encodeToString(VaultData.serializer(), snapshot).toByteArray(Charsets.UTF_8),
-                cfg.cryptPassword,
-            )
-            transport.put(blob)
+            // push: снапшот + неизвестные поля облака как были
+            transport.put(SyncCrypto.encrypt(cloudJson().toByteArray(Charsets.UTF_8), cfg.cryptPassword))
 
             val at = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
             _status.value = Status.Ok(at, summary)
         } catch (e: Exception) {
             _status.value = Status.Error(e.message ?: e.toString())
         }
+    }
+
+    /** JSON для облака: без локальных полей, с вклеенными чужими. */
+    private fun cloudJson(): String {
+        val snap = VaultJson.encodeToJsonElement(VaultData.serializer(), VaultRepo.snapshotForSync()) as JsonObject
+        val out = LinkedHashMap<String, JsonElement>()
+        for ((k, v) in snap) if (k !in LOCAL_ONLY_KEYS) out[k] = v
+        for ((k, v) in VaultRepo.foreignFields()) if (k !in out) out[k] = v
+        return JsonObject(out).toString()
     }
 
     private fun configProblem(cfg: SyncConfig?): String? = when {

@@ -1,61 +1,38 @@
 package org.qterm.android.ssh
 
 /**
- * Базовый словарь подсказок (как в Termius): частые админские команды
- * с уклоном в Debian/systemd/docker/сети/Keenetic. Персональный журнал
- * (vault.cmdHistory) имеет приоритет и синкается между устройствами.
+ * Встроенный словарь подсказок — 1:1 с CommandDict.common мака (скоуп
+ * "server"). Тексты обязаны совпадать между платформами: скрытия
+ * встроенных команд синкаются через cmdDictUser по тексту команды.
  */
 object CommandDict {
     val COMMON: List<String> = listOf(
-        // система
-        "systemctl status", "systemctl restart", "systemctl stop", "systemctl start",
-        "systemctl enable --now", "systemctl disable", "systemctl daemon-reload",
-        "journalctl -u", "journalctl -f", "journalctl -xe", "dmesg | tail -50",
-        "uname -a", "uptime", "free -h", "df -h", "du -sh *", "lsblk", "mount",
-        "htop", "top", "ps aux | grep", "kill -9", "pkill -f", "nohup",
-        "crontab -e", "crontab -l", "reboot", "shutdown -h now",
-        "chmod +x", "chmod 600", "chmod 755", "chown -R", "ln -s",
-        "tail -f", "tail -n 100", "less", "cat", "nano", "vi",
-        "grep -r", "grep -i", "find / -name", "find . -type f -name",
-        "sed -i", "awk '{print $1}'", "sort | uniq -c | sort -rn", "wc -l",
-        "tar xzf", "tar czf", "unzip", "zip -r", "rsync -avz --progress",
-        "scp", "ssh", "ssh-keygen -t ed25519", "ssh-copy-id",
-        "history | grep", "watch -n 1", "date", "timedatectl",
-        // пакеты
-        "apt update", "apt upgrade -y", "apt install -y", "apt remove",
-        "apt autoremove -y", "apt search", "apt list --installed | grep",
-        "dpkg -l | grep", "dpkg -i", "apt-cache policy",
-        "opkg update", "opkg install", "opkg remove", "opkg list-installed | grep",
-        // сеть
-        "ip a", "ip r", "ip -br a", "ip route get", "ip link set",
-        "ss -tulpn", "ss -s", "netstat -tulpn", "ping -c 4", "traceroute", "mtr",
-        "curl -s", "curl -I", "curl -o", "curl ifconfig.me", "wget",
-        "dig", "dig +short", "nslookup", "host", "whois",
-        "iptables -L -n -v", "iptables -t nat -L -n", "nft list ruleset",
-        "ufw status", "ufw allow", "tcpdump -i any -n port",
-        "ethtool", "arp -a", "hostname -I",
-        // wireguard / xray / прокси
-        "wg show", "wg-quick up", "wg-quick down", "wg genkey", "wg pubkey",
-        "systemctl restart xray", "systemctl status xray", "journalctl -u xray -f",
-        "systemctl restart x-ui", "x-ui", "xray version", "xray run -test -config",
-        "systemctl restart AdGuardHome", "systemctl status AdGuardHome",
-        "unbound-checkconf", "systemctl restart unbound",
-        "nginx -t", "systemctl reload nginx", "certbot renew --dry-run",
-        // docker
-        "docker ps", "docker ps -a", "docker logs -f", "docker logs --tail 100",
-        "docker restart", "docker stop", "docker rm -f", "docker images",
-        "docker exec -it", "docker compose up -d", "docker compose down",
-        "docker compose pull", "docker compose logs -f", "docker system prune -af",
-        "docker stats", "docker inspect",
-        // git
-        "git status", "git pull", "git push", "git add -A", "git commit -m",
-        "git log --oneline -10", "git diff", "git checkout", "git clone",
-        "git stash", "git reset --hard",
-        // файлы/диагностика
-        "mkdir -p", "cp -r", "mv", "rm -rf", "touch", "stat", "file",
-        "openssl s_client -connect", "openssl x509 -noout -dates -in",
-        "base64", "md5sum", "sha256sum", "dd if=", "lsof -i", "strace -p",
-        "ulimit -n", "sysctl -w", "sysctl net.ipv4.ip_forward=1",
-        "echo 1 > /proc/sys/net/ipv4/ip_forward",
+        "systemctl status", "systemctl restart", "systemctl stop", "systemctl start", "systemctl enable",
+        "systemctl disable", "systemctl daemon-reload", "systemctl list-units", "journalctl -u",
+        "journalctl -f", "journalctl -e", "journalctl --since", "reboot", "poweroff", "uptime",
+        "uname -a", "hostnamectl", "timedatectl", "df -h", "du -sh", "free -h", "top", "htop",
+        "ps aux", "kill", "killall", "lsof -i", "dmesg", "watch", "apt update", "apt upgrade",
+        "apt install", "apt remove", "apt autoremove", "apt search", "apt list --installed",
+        "dpkg -l", "opkg update", "opkg install", "opkg remove", "opkg list-installed", "opkg files",
+        "ls -la", "cd", "cat", "less", "tail -f", "tail -n", "head", "grep -r", "find / -name",
+        "chmod +x", "chmod 644", "chown", "ln -s", "mkdir -p", "rm -rf", "cp -r", "mv", "touch",
+        "nano", "vi", "tar -xzf", "tar -czf", "unzip", "rsync -avz", "scp", "dd if=", "mount",
+        "umount", "ip a", "ip r", "ip link", "ip neigh", "ss -tulpn", "ss -s", "ping", "ping -c 4",
+        "traceroute", "mtr", "dig", "dig @127.0.0.1", "nslookup", "host", "curl -I", "curl -s",
+        "curl -o", "wget", "nft list ruleset", "nft flush ruleset", "iptables -L -n -v",
+        "iptables -t nat -L -n", "tcpdump -i", "arp -a", "ethtool", "networkctl", "wg", "wg show",
+        "wg-quick up", "wg-quick down", "wg genkey", "wg pubkey", "awg show", "systemctl restart xray",
+        "systemctl status xray", "journalctl -u xray -f", "x-ui", "x-ui status", "x-ui restart",
+        "xray version", "xray run -test -config", "systemctl restart AdGuardHome", "systemctl status AdGuardHome",
+        "unbound-control status", "unbound-control reload", "unbound-checkconf", "systemctl restart unbound",
+        "nginx -t", "nginx -s reload", "systemctl restart nginx", "systemctl status nginx",
+        "certbot renew", "certbot certificates", "caddy reload", "caddy validate", "docker ps",
+        "docker ps -a", "docker logs -f", "docker restart", "docker stop", "docker exec -it",
+        "docker compose up -d", "docker compose down", "docker compose logs -f", "docker compose pull",
+        "docker images", "docker system prune", "git status", "git pull", "git push", "git add -A",
+        "git commit -m", "git log --oneline", "git diff", "git clone", "git checkout", "git stash",
+        "ssh", "ssh-keygen -t ed25519", "ssh-copy-id", "crontab -e", "crontab -l", "echo",
+        "export", "env", "which", "whoami", "id", "date", "history", "openssl s_client -connect",
+        "base64", "md5sum", "sha256sum",
     )
 }

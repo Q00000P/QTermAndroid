@@ -44,18 +44,26 @@ object TermRegistry {
     fun openFor(session: Session, vault: VaultData): Open {
         map[session.id]?.let { return it }
 
-        val key = session.keyID?.let { id -> vault.sshKeys.firstOrNull { it.id.equals(id, ignoreCase = true) } }
+        val id = session.id
         val controller = TerminalController(
-            host = session.host.trim(),
-            port = session.port,
-            username = session.username,
-            initialDir = session.extra["termPath"],
-            keyPem = key?.privateKey,
-            keyPassphrase = session.keyID?.let { vault.secrets["key:${it}.passphrase"] },
-            storedPassword = vault.secrets["${session.id}.password"],
-            knownHostKeyB64 = session.extra["hostkey"],
-            persistHostKey = { VaultRepo.persistHostKey(session.id, it) },
-            persistPassword = { VaultRepo.persistPassword(session.id, it) },
+            // свежие параметры из вейлта на каждый (пере)коннект
+            params = {
+                val v = VaultRepo.data ?: vault
+                val s = VaultRepo.session(id) ?: session
+                val key = s.keyID?.let { kid -> v.sshKeys.firstOrNull { it.id.equals(kid, ignoreCase = true) && it.deleted != true } }
+                ConnParams(
+                    host = s.host.trim(),
+                    port = s.port,
+                    username = s.username,
+                    initialDir = s.extra["termPath"],
+                    keyPem = key?.privateKey,
+                    keyPassphrase = s.keyID?.let { v.secrets["key:$it.passphrase"] },
+                    storedPassword = v.secrets["$id.password"],
+                    knownHostKeyB64 = s.extra["hostkey"],
+                )
+            },
+            persistHostKey = { VaultRepo.persistHostKey(id, it) },
+            persistPassword = { VaultRepo.persistPassword(id, it) },
         )
         val emulator = TerminalEmulatorFactory.create(
             onKeyboardInput = { controller.write(it) },

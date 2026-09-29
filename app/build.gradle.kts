@@ -16,8 +16,8 @@ android {
         applicationId = "org.qterm.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 30
-        versionName = "3.0"
+        versionCode = 38
+        versionName = "3.8.0"
 
         // OAuth Google: client id из gradle.properties (qterm.gdriveClientId=…)
         buildConfigField("String", "GDRIVE_CLIENT_ID", "\"$gdriveClientId\"")

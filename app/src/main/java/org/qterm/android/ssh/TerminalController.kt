@@ -5,13 +5,13 @@ import com.trilead.ssh2.ServerHostKeyVerifier
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.connectbot.terminal.TerminalEmulator
+import org.qterm.android.vault.VaultRepo
 import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
-import org.qterm.android.vault.VaultRepo
 
 sealed class TermState {
     data object Connecting : TermState()
@@ -22,72 +22,138 @@ sealed class TermState {
     data object Disconnected : TermState()
 }
 
+/** Параметры входа — читаются из вейлта заново на КАЖДЫЙ коннект. */
+data class ConnParams(
+    val host: String,
+    val port: Int,
+    val username: String,
+    val initialDir: String?,
+    val keyPem: String?,
+    val keyPassphrase: String?,
+    val storedPassword: String?,
+    val knownHostKeyB64: String?,
+)
+
 /**
- * Один SSH-сеанс: соединение, TOFU по extra["hostkey"] (тот же wire-формат
- * base64, что пишет мак), auth ключом из вейлта / паролем, PTY
- * xterm-256color, прокачка stdout → эмулятор и клавиатуры → stdin.
- * Все сетевые вызовы — на своём однопоточном executor.
+ * Один SSH-сеанс: соединение, TOFU по extra["hostkey"], auth ключом из
+ * вейлта / паролем, PTY xterm-256color, прокачка stdout → эмулятор и
+ * клавиатуры → stdin. Все сетевые вызовы — на своём однопоточном executor.
+ *
+ * Параметры берутся из вейлта при каждом коннекте: правка ноды, «Забыть
+ * пароль», «Сбросить доверие» применяются при переподключении.
+ * Обрыв → авто-реконнект с бэкоффом 2-4-8-16-30с (как на маке/винде),
+ * эмулятор не пересоздаётся — экран и скроллбек остаются.
  */
 class TerminalController(
-    private val host: String,
-    private val port: Int,
-    private val username: String,
-    private val initialDir: String? = null,
-    private val keyPem: String?,
-    private val keyPassphrase: String?,
-    private val storedPassword: String?,
-    private val knownHostKeyB64: String?,
+    private val params: () -> ConnParams,
     private val persistHostKey: (String) -> Unit,
     private val persistPassword: (String) -> Unit,
 ) {
     private val _state = MutableStateFlow<TermState>(TermState.Connecting)
     val state: StateFlow<TermState> = _state
 
+    /** Через сколько секунд следующая авто-попытка (null — не ждём). */
+    private val _reconnectIn = MutableStateFlow<Int?>(null)
+    val reconnectIn: StateFlow<Int?> = _reconnectIn
+
     private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "ssh-io") }
     private var conn: Connection? = null
     private var shell: com.trilead.ssh2.Session? = null
     private var stdin: OutputStream? = null
     private var emulator: TerminalEmulator? = null
+    private var cur: ConnParams? = null
 
     @Volatile private var cols = 80
     @Volatile private var rows = 24
     @Volatile private var ptyStarted = false
     @Volatile private var closed = false
+    /** Поколение shell: читающий поток старого shell не трогает состояние нового. */
+    @Volatile private var shellGen = 0
+    /** Поколение расписания реконнекта. */
+    @Volatile private var retryGen = 0
+    @Volatile private var attempt = 0
+
     /** true — юзер сам отключил; авто-reconnect не лезет. */
     @Volatile var userClosed = false
         private set
 
-    // SSH-keepalive: молчащий сокет умирает в NAT при спящем радио
-    private val keepalive: ScheduledExecutorService =
+    // keepalive + таймеры реконнекта
+    private val sched: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "ssh-ka") }
 
     init {
-        keepalive.scheduleAtFixedRate({
+        // SSH-keepalive: молчащий сокет умирает в NAT при спящем радио
+        sched.scheduleAtFixedRate({
             val c = conn
             if (c != null && ptyStarted && !closed) {
                 try {
                     c.sendIgnorePacket()
                 } catch (_: Exception) {
-                    // сокет мёртв — читающий поток сам переведёт в Disconnected
+                    // сокет мёртв — читающий поток переведёт в Disconnected
                 }
             }
         }, 25, 25, TimeUnit.SECONDS)
     }
 
-    fun start(emulator: TerminalEmulator) {
-        this.emulator = emulator
-        exec.execute { connectBlocking() }
+    // ------------------------------------------------ журнал: экранная сверка
+
+    private val lineLock = Any()
+    private var promptAtStart: String? = null
+    private class Pending(val prompt: String?, val typed: String, val dirty: Boolean, val at: Long)
+    private var pending: Pending? = null
+
+    /** Текущая строка экрана по выводу сервера (под lineLock). */
+    private val screen = ScreenLine(onCommit = { line -> onScreenLine(line) })
+
+    private val tracker = CommandTracker(
+        onLineStart = {
+            synchronized(lineLock) {
+                promptAtStart = if (screen.altScreen) null else screen.beforeCursor()
+            }
+        },
+        onEnter = { typed, dirty, tainted ->
+            synchronized(lineLock) {
+                val p = promptAtStart
+                promptAtStart = null
+                pending = if (tainted || screen.altScreen || (!dirty && typed.isBlank())) {
+                    null
+                } else {
+                    Pending(p, typed, dirty, System.currentTimeMillis())
+                }
+            }
+        },
+        suppressed = { synchronized(lineLock) { screen.altScreen } },
+    )
+
+    /** Подсказки: восстановленная строка набора ("" — не показывать). */
+    val cmdPrefix = tracker.prefix
+
+    /** Шелл закрыл строку переводом строки — решаем по экрану (зовётся под lineLock). */
+    private fun onScreenLine(line: String) {
+        val p = pending ?: return
+        pending = null
+        if (System.currentTimeMillis() - p.at > 5_000) return
+        JournalDecision.decide(p.prompt, p.typed, p.dirty, line)?.let { VaultRepo.recordCommand(it) }
     }
 
-    private fun connectBlocking() {
+    // ------------------------------------------------------------ коннект
+
+    fun start(emulator: TerminalEmulator) {
+        this.emulator = emulator
+        exec.execute { connectBlocking(auto = false) }
+    }
+
+    private fun connectBlocking(auto: Boolean) {
+        val p = params()
+        cur = p
         try {
-            banner("Подключение к $username@$host:$port…")
-            val c = Connection(host, port)
+            banner("Подключение к ${p.username}@${p.host}:${p.port}…")
+            val c = Connection(p.host, p.port)
             conn = c
 
             val verifier = ServerHostKeyVerifier { _, _, algo, key ->
                 val b64 = Base64.getEncoder().encodeToString(key)
-                when (knownHostKeyB64) {
+                when (p.knownHostKeyB64) {
                     null -> {
                         persistHostKey(b64)
                         banner("Первый контакт: ключ хоста $algo ${fingerprint(key)} сохранён")
@@ -96,7 +162,7 @@ class TerminalController(
                     b64 -> true
                     else -> {
                         _state.value = TermState.HostKeyMismatch(
-                            expected = fingerprint(Base64.getDecoder().decode(knownHostKeyB64)),
+                            expected = fingerprint(Base64.getDecoder().decode(p.knownHostKeyB64)),
                             actual = fingerprint(key),
                         )
                         false
@@ -106,26 +172,33 @@ class TerminalController(
             c.connect(verifier, 15_000, 30_000)
 
             var authed = false
-            if (keyPem != null) {
+            if (p.keyPem != null) {
                 authed = try {
-                    val pair = com.trilead.ssh2.crypto.PEMDecoder.decode(keyPem.toCharArray(), keyPassphrase)
-                    c.authenticateWithPublicKey(username, pair)
+                    val pair = com.trilead.ssh2.crypto.PEMDecoder.decode(p.keyPem.toCharArray(), p.keyPassphrase)
+                    c.authenticateWithPublicKey(p.username, pair)
                 } catch (e: Exception) {
                     banner("Ключ не подошёл: ${e.message}")
                     false
                 }
+                if (!authed) banner("Ключ отклонён — пробую пароль")
             }
-            if (!authed && storedPassword != null && c.isAuthMethodAvailable(username, "password")) {
-                authed = c.authenticateWithPassword(username, storedPassword)
+            if (!authed && p.storedPassword != null && c.isAuthMethodAvailable(p.username, "password")) {
+                authed = c.authenticateWithPassword(p.username, p.storedPassword)
             }
             if (!authed) {
                 if (closed) return
-                _state.value = TermState.NeedPassword(error = keyPem != null || storedPassword != null)
+                _reconnectIn.value = null
+                _state.value = TermState.NeedPassword(error = p.keyPem != null || p.storedPassword != null)
                 return // ждём submitPassword()
             }
-            openShell(c)
+            openShell(c, p)
         } catch (e: Exception) {
-            if (!closed && _state.value !is TermState.HostKeyMismatch) {
+            if (closed || _state.value is TermState.HostKeyMismatch) return
+            if (auto) {
+                // обрыв во время авто-попытки — не ошибка, а следующая попытка
+                banner("Нет связи: ${e.message ?: e}")
+                dropped()
+            } else {
                 _state.value = TermState.Failed(e.message ?: e.toString())
             }
         }
@@ -136,9 +209,10 @@ class TerminalController(
         exec.execute {
             try {
                 val c = conn ?: return@execute
-                if (c.authenticateWithPassword(username, pw)) {
+                val p = cur ?: params()
+                if (c.authenticateWithPassword(p.username, pw)) {
                     persistPassword(pw)
-                    openShell(c)
+                    openShell(c, p)
                 } else {
                     _state.value = TermState.NeedPassword(error = true)
                 }
@@ -148,18 +222,21 @@ class TerminalController(
         }
     }
 
-    private fun openShell(c: Connection) {
+    private fun openShell(c: Connection, p: ConnParams) {
         val s = c.openSession()
         shell = s
         s.requestPTY("xterm-256color", cols, rows, 0, 0, null)
         s.startShell()
         stdin = s.stdin
         ptyStarted = true
-        initialDir?.takeIf { it.isNotBlank() }?.let { dir ->
+        p.initialDir?.takeIf { it.isNotBlank() }?.let { dir ->
             val esc = dir.replace("'", "'\\''")
             stdin?.write("cd '$esc'\n".toByteArray(Charsets.UTF_8))
             stdin?.flush()
         }
+        val gen = ++shellGen
+        attempt = 0
+        _reconnectIn.value = null
         _state.value = TermState.Connected
 
         val out = s.stdout
@@ -169,17 +246,36 @@ class TerminalController(
                 while (true) {
                     val n = out.read(buf)
                     if (n < 0) break
-                    if (n > 0) emulator?.writeInput(buf, 0, n)
+                    if (n > 0) {
+                        synchronized(lineLock) { screen.feed(buf, 0, n) }
+                        emulator?.writeInput(buf, 0, n)
+                    }
                 }
             } catch (_: Exception) {
             }
-            if (!closed) _state.value = TermState.Disconnected
+            if (!closed && gen == shellGen) dropped()
         }, "ssh-read").start()
     }
 
-    /** Журнал/подсказки: восстановленная строка набора. */
-    private val tracker = CommandTracker(onCommand = { VaultRepo.recordCommand(it) })
-    val cmdPrefix = tracker.prefix
+    /** Соединение потеряно не по воле юзера — ждём и пробуем снова. */
+    private fun dropped() {
+        if (closed || userClosed) return
+        ptyStarted = false
+        _state.value = TermState.Disconnected
+        val delays = intArrayOf(2, 4, 8, 16, 30)
+        val d = delays[minOf(attempt, delays.size - 1)]
+        attempt++
+        val g = ++retryGen
+        _reconnectIn.value = d
+        runCatching {
+            // явный Runnable: у schedule() есть и Callable-перегрузка — лямбда была бы неоднозначной
+            sched.schedule(Runnable {
+                if (g == retryGen && !closed && !userClosed && _state.value == TermState.Disconnected) {
+                    runCatching { exec.execute { reconnectInternal(auto = true) } }
+                }
+            }, d.toLong(), TimeUnit.SECONDS)
+        }
+    }
 
     /** Клавиатура терминала → stdin ноды. */
     fun write(data: ByteArray) {
@@ -208,12 +304,13 @@ class TerminalController(
         }
     }
 
-    /** Отправить текст в удалённый shell (сниппеты, Ctrl-последовательности). */
+    /** Отправить текст в удалённый shell (сниппеты, команды Git, подсказки). */
     fun send(text: String) {
-        tracker.feed(text.toByteArray(Charsets.UTF_8))
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        tracker.feed(bytes)
         exec.execute {
             runCatching {
-                stdin?.write(text.toByteArray(Charsets.UTF_8))
+                stdin?.write(bytes)
                 stdin?.flush()
             }
         }
@@ -222,30 +319,43 @@ class TerminalController(
     /** Живое соединение — для SFTP/exec проводника (null до коннекта). */
     fun connection(): Connection? = conn
 
+    /** Ручное переподключение (кнопка/возврат в приложение): бэкофф с нуля. */
+    fun reconnect() {
+        retryGen++
+        attempt = 0
+        _reconnectIn.value = null
+        exec.execute { reconnectInternal(auto = false) }
+    }
+
     /**
      * Переподключение БЕЗ пересоздания эмулятора: скроллбек и экран
-     * сохраняются, вывод нового shell продолжается в том же терминале
-     * (и cd в termPath повторится).
+     * сохраняются, новый shell продолжает в том же терминале.
      */
-    fun reconnect() {
-        exec.execute {
-            runCatching { shell?.close() }
-            runCatching { conn?.close() }
-            shell = null
-            stdin = null
-            conn = null
-            ptyStarted = false
-            closed = false
-            userClosed = false
-            _state.value = TermState.Connecting
-            connectBlocking()
+    private fun reconnectInternal(auto: Boolean) {
+        shellGen++ // старый читающий поток больше не трогает состояние
+        runCatching { shell?.close() }
+        runCatching { conn?.close() }
+        shell = null
+        stdin = null
+        conn = null
+        ptyStarted = false
+        closed = false
+        userClosed = false
+        tracker.reset()
+        synchronized(lineLock) {
+            pending = null
+            promptAtStart = null
+            screen.reset()
         }
+        _state.value = TermState.Connecting
+        connectBlocking(auto)
     }
 
     fun close() {
         closed = true
         userClosed = true
-        keepalive.shutdownNow()
+        retryGen++
+        sched.shutdownNow()
         exec.execute {
             try { shell?.close() } catch (_: Exception) {}
             try { conn?.close() } catch (_: Exception) {}

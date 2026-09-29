@@ -44,7 +44,11 @@ import org.qterm.android.ssh.TermState
 import android.widget.Toast
 import org.qterm.android.sync.GDriveAuth
 import org.qterm.android.sync.SyncEngine
+import org.qterm.android.editor.EditorRegistry
+import org.qterm.android.ui.AboutSheet
+import org.qterm.android.ui.EditorScreen
 import org.qterm.android.ui.FilesScreen
+import org.qterm.android.ui.GitCommandsSheet
 import org.qterm.android.ui.SessionEditorSheet
 import org.qterm.android.ui.CmdHistorySheet
 import org.qterm.android.ui.SyncSheet
@@ -99,12 +103,20 @@ fun Root() {
     TermRegistry.version // подписка на изменения реестра
 
     var showFiles by rememberSaveable { mutableStateOf(false) }
+    var editorOpen by rememberSaveable { mutableStateOf(false) }
+
+    // редактор поверх всего; вкладки живут в EditorRegistry, «назад» только прячет
+    if (editorOpen && EditorRegistry.docs.isNotEmpty()) {
+        EditorScreen(onClose = { editorOpen = false })
+        return
+    }
 
     val active = activeId?.let { TermRegistry.get(it) }
     if (active != null && showFiles) {
         FilesScreen(
             open = active,
             onBack = { showFiles = false },
+            onOpenEditor = { editorOpen = true },
         )
     } else if (active != null) {
         TerminalScreen(
@@ -125,6 +137,10 @@ fun Root() {
                 TermRegistry.openFor(s, v)
                 activeId = s.id
             },
+            onOpenEditor = {
+                if (EditorRegistry.docs.isEmpty()) EditorRegistry.newScratch()
+                editorOpen = true
+            },
         )
     }
 }
@@ -134,6 +150,7 @@ fun Root() {
 fun HostsScreen(
     vault: VaultData,
     onOpen: (Session) -> Unit,
+    onOpenEditor: () -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -192,6 +209,8 @@ fun HostsScreen(
     var menuFor by remember { mutableStateOf<Session?>(null) }
     var syncSheet by remember { mutableStateOf(false) }
     var cmdHistorySheet by remember { mutableStateOf(false) }
+    var gitSheet by remember { mutableStateOf(false) }
+    var aboutSheet by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Session?>(null) }
     var editingIsNew by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<Session?>(null) }
@@ -218,7 +237,8 @@ fun HostsScreen(
                 onSuccess = { st ->
                     snackbar.showSnackbar(
                         "Нод +${st.sessions} (обновлено ${st.updatedSessions}), " +
-                            "ключей +${st.keys}, сниппетов +${st.snippets}, секретов +${st.secrets}",
+                            "ключей +${st.keys}, сниппетов +${st.snippets}, " +
+                            "Git +${st.gitCommands}, секретов +${st.secrets}",
                     )
                 },
                 onFailure = { e -> snackbar.showSnackbar(e.message ?: "Ошибка импорта") },
@@ -278,13 +298,30 @@ fun HostsScreen(
                                 onClick = { overflow = false; syncSheet = true },
                             )
                             DropdownMenuItem(
-                                text = { Text("Журнал команд…") },
+                                text = { Text("Журнал и словарь…") },
                                 onClick = { overflow = false; cmdHistorySheet = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Команды Git…") },
+                                onClick = { overflow = false; gitSheet = true },
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (EditorRegistry.docs.isEmpty()) "Редактор (скрапбук)"
+                                        else "Редактор — вкладок ${EditorRegistry.docs.size}",
+                                    )
+                                },
+                                onClick = { overflow = false; onOpenEditor() },
                             )
                             DropdownMenuItem(
                                 text = { Text("Закрыть все сессии") },
                                 enabled = TermRegistry.all().isNotEmpty(),
                                 onClick = { overflow = false; TermRegistry.closeAll() },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("О приложении") },
+                                onClick = { overflow = false; aboutSheet = true },
                             )
                         }
                     }
@@ -351,6 +388,20 @@ fun HostsScreen(
                 if (TermRegistry.isOpen(s.id)) {
                     SheetAction("Отключить") { menuFor = null; TermRegistry.close(s.id) }
                 }
+                if (VaultRepo.hasPassword(s.id)) {
+                    SheetAction("Забыть пароль") {
+                        menuFor = null
+                        VaultRepo.forgetPassword(s.id)
+                        scope.launch { snackbar.showSnackbar("Пароль «${s.name}» удалён из вейлта") }
+                    }
+                }
+                if (s.keyID != null) {
+                    SheetAction("Отвязать ключ") {
+                        menuFor = null
+                        VaultRepo.unlinkKey(s.id)
+                        scope.launch { snackbar.showSnackbar("Ключ отвязан — вход по паролю") }
+                    }
+                }
                 if (s.extra.containsKey("hostkey")) {
                     SheetAction("Сбросить доверие (ключ хоста)") {
                         menuFor = null
@@ -404,6 +455,14 @@ fun HostsScreen(
 
     if (cmdHistorySheet) {
         CmdHistorySheet(onDismiss = { cmdHistorySheet = false })
+    }
+
+    if (gitSheet) {
+        GitCommandsSheet(onInsert = null, onDismiss = { gitSheet = false })
+    }
+
+    if (aboutSheet) {
+        AboutSheet(onDismiss = { aboutSheet = false })
     }
 
     if (syncSheet) {

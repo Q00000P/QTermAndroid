@@ -41,7 +41,11 @@ object QtVaultFile {
         } catch (e: Exception) {
             throw BadPasswordException()
         }
-        return VaultJson.decodeFromString(QtVaultPayload.serializer(), json.toString(Charsets.UTF_8))
+        // терпимо к числовым датам Swift и к виндовому формату (SessionVault целиком)
+        return VaultJson.decodeFromJsonElement(
+            QtVaultPayload.serializer(),
+            normalizeAppleDates(VaultJson.parseToJsonElement(json.toString(Charsets.UTF_8))),
+        )
     }
 
     fun encrypt(payload: QtVaultPayload, password: String): ByteArray {

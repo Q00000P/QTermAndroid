@@ -28,19 +28,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.qterm.android.editor.EditorRegistry
 import org.qterm.android.ssh.*
 import org.qterm.android.vault.VaultRepo
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private const val EDIT_LIMIT = 2 * 1024 * 1024 // 2МБ, как на маке
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FilesScreen(
     open: TermRegistry.Open,
     onBack: () -> Unit,
+    onOpenEditor: () -> Unit,
 ) {
     val session = VaultRepo.session(open.session.id) ?: open.session
     val scope = rememberCoroutineScope()
@@ -62,11 +63,6 @@ fun FilesScreen(
     var renaming by remember { mutableStateOf<RemoteEntry?>(null) }
     var deleting by remember { mutableStateOf<RemoteEntry?>(null) }
     var newFolder by remember { mutableStateOf(false) }
-
-    // редактор
-    var editPath by remember { mutableStateOf<String?>(null) }
-    var editText by remember { mutableStateOf("") }
-    var editDirty by remember { mutableStateOf(false) }
 
     suspend fun ops(): FileOps {
         open.fileOps?.let { return it }
@@ -109,86 +105,26 @@ fun FilesScreen(
     }
 
     fun openFile(e: RemoteEntry) {
-        if (e.size > EDIT_LIMIT) {
-            scope.launch { snackbar.showSnackbar("Файл больше 2МБ — просмотр не потянем") }
+        if (e.size > EditorRegistry.LIMIT) {
+            scope.launch { snackbar.showSnackbar("Файл больше 2 МБ — в редакторе не открыть") }
             return
         }
         scope.launch {
             loading = true
             val full = joinPath(path, e.name)
             val result = runCatching {
-                open.fileMutex.withLock { withContext(Dispatchers.IO) { ops().read(full) } }
+                val bytes = open.fileMutex.withLock { withContext(Dispatchers.IO) { ops().read(full) } }
+                EditorRegistry.openRemote(open.session.id, session.name, full, bytes)
             }
             loading = false
             result.fold(
-                onSuccess = { bytes ->
-                    val text = runCatching { bytes.toString(Charsets.UTF_8) }.getOrNull()
-                    if (text == null || text.contains('\u0000')) {
-                        scope.launch { snackbar.showSnackbar("Не UTF-8 / бинарный файл") }
-                    } else {
-                        editText = text
-                        editDirty = false
-                        editPath = full
-                    }
-                },
-                onFailure = { snackbar.showSnackbar("Чтение: ${it.message}") },
-            )
-        }
-    }
-
-    fun saveFile() {
-        val target = editPath ?: return
-        scope.launch {
-            loading = true
-            val result = runCatching {
-                open.fileMutex.withLock {
-                    withContext(Dispatchers.IO) { ops().write(target, editText.toByteArray(Charsets.UTF_8)) }
-                }
-            }
-            loading = false
-            result.fold(
-                onSuccess = {
-                    editDirty = false
-                    snackbar.showSnackbar("Сохранено: ${target.substringAfterLast('/')}")
-                },
-                onFailure = { snackbar.showSnackbar("Запись: ${it.message}") },
+                onSuccess = { onOpenEditor() },
+                onFailure = { snackbar.showSnackbar("Не открыт: ${it.message}") },
             )
         }
     }
 
     LaunchedEffect(open.session.id) { refresh() }
-
-    // ------- редактор поверх всего -------
-    editPath?.let { p ->
-        BackHandler { editPath = null }
-        Column(Modifier.fillMaxSize().background(Color(0xFF121212)).safeDrawingPadding()) {
-            Row(
-                Modifier.fillMaxWidth().background(Color(0xFF1B1B1B)).padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = { editPath = null }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = Color.White)
-                }
-                Text(
-                    p.substringAfterLast('/') + if (editDirty) " •" else "",
-                    color = Color.White,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(enabled = editDirty && !loading, onClick = { saveFile() }) { Text("Сохранить") }
-            }
-            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-            OutlinedTextField(
-                value = editText,
-                onValueChange = { editText = it; editDirty = true },
-                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                modifier = Modifier.fillMaxSize().padding(4.dp).imePadding(),
-            )
-        }
-        return
-    }
 
     // ------- проводник -------
     BackHandler { onBack() }
@@ -215,6 +151,9 @@ fun FilesScreen(
                     }
                 },
                 actions = {
+                    if (EditorRegistry.docs.isNotEmpty()) {
+                        TextButton(onClick = onOpenEditor) { Text("Ред. ${EditorRegistry.docs.size}") }
+                    }
                     IconButton(enabled = path != "/", onClick = { refresh(parentPath(path)) }) {
                         Icon(Icons.Default.ArrowUpward, contentDescription = "Вверх")
                     }

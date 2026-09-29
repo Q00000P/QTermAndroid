@@ -31,7 +31,6 @@ import kotlinx.coroutines.launch
 import org.connectbot.terminal.ModifierManager
 import org.connectbot.terminal.Terminal
 import org.connectbot.terminal.VTermKey
-import org.qterm.android.ssh.CommandDict
 import org.qterm.android.ssh.TermRegistry
 import org.qterm.android.ssh.TermState
 import org.qterm.android.vault.VaultRepo
@@ -68,6 +67,8 @@ fun TerminalScreen(
     var kbOn by remember(open.session.id) { mutableStateOf(true) }
     val mods = remember(open.session.id) { StickyModifiers() }
     var snippetsOpen by remember { mutableStateOf(false) }
+    var gitOpen by remember { mutableStateOf(false) }
+    val retryIn by controller.reconnectIn.collectAsState()
 
     fun pokeKeyboard() {
         scope.launch {
@@ -160,6 +161,17 @@ fun TerminalScreen(
                     },
                 )
             }
+            TextButton(
+                onClick = { gitOpen = true },
+                enabled = st == TermState.Connected,
+                contentPadding = PaddingValues(horizontal = 6.dp),
+            ) {
+                Text(
+                    "Git",
+                    color = if (st == TermState.Connected) Color.White else Color(0xFF555555),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
             IconButton(onClick = { snippetsOpen = true }, enabled = st == TermState.Connected) {
                 Icon(
                     Icons.Default.Bolt,
@@ -211,7 +223,7 @@ fun TerminalScreen(
                             .thenByDescending { it.value.lastUsed },
                     )
                     ?.map { it.key } ?: emptyList()
-                val dict = CommandDict.COMMON.filter { it.startsWith(prefix) && it != prefix }
+                val dict = VaultRepo.effectiveDict().filter { it.startsWith(prefix) && it != prefix }
                 val personalSet = personal.toSet()
                 val suggestions = (personal + dict).distinct().take(6)
                 if (suggestions.isNotEmpty()) {
@@ -230,9 +242,13 @@ fun TerminalScreen(
                                     .combinedClickable(
                                         onClick = { controller.send(sug.removePrefix(prefix)) },
                                         onLongClick = {
+                                            // ★ своя — удалить из журнала; зелёная — скрыть из словаря
                                             if (mine) {
                                                 VaultRepo.deleteCommand(sug)
                                                 Toast.makeText(ctx, "Удалено из журнала", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                VaultRepo.hideDictEntry(sug)
+                                                Toast.makeText(ctx, "Скрыто из словаря", Toast.LENGTH_SHORT).show()
                                             }
                                         },
                                     )
@@ -262,7 +278,7 @@ fun TerminalScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "Соединение потеряно",
+                        retryIn?.let { "Соединение потеряно · повтор через ${it}с" } ?: "Соединение потеряно",
                         color = Color.White,
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.weight(1f),
@@ -287,6 +303,13 @@ fun TerminalScreen(
         SnippetsSheet(
             onInsert = { cmd, run -> controller.send(if (run) cmd + "\n" else cmd) },
             onDismiss = { snippetsOpen = false },
+        )
+    }
+
+    if (gitOpen) {
+        GitCommandsSheet(
+            onInsert = { cmd, run -> controller.send(if (run) cmd + "\n" else cmd) },
+            onDismiss = { gitOpen = false },
         )
     }
 

@@ -71,17 +71,19 @@ data class ImportStats(
     val keys: Int,
     val snippets: Int,
     val secrets: Int,
+    val gitCommands: Int = 0,
 )
 
 /**
- * Слияние импорта: новые записи добавляются, СУЩЕСТВУЮЩИЕ (по id)
- * ОБНОВЛЯЮТСЯ из файла — переэкспорт с мака становится «обновить всё».
- * Исключения: локальный extra["hostkey"] (TOFU этого устройства) имеет
- * приоритет, секреты не перезатираются (putIfAbsent).
+ * Слияние импорта (семантика винды/мака): новые записи добавляются,
+ * СУЩЕСТВУЮЩИЕ (по id) ОБНОВЛЯЮТСЯ из файла — переэкспорт становится
+ * «обновить всё». Исключения: локальный extra["hostkey"] (TOFU этого
+ * устройства) приоритетнее, секреты не перезатираются (putIfAbsent),
+ * "sync.*" другой платформы не берутся. Журналы/словарь — правилами синка.
  */
 fun VaultData.mergeImport(p: QtVaultPayload): ImportStats {
     val now = nowIso()
-    var added = 0; var updated = 0; var k = 0; var sn = 0; var sec = 0
+    var added = 0; var updated = 0; var k = 0; var sn = 0; var sec = 0; var gc = 0
 
     for (imp in p.sessions) {
         val idx = sessions.indexOfFirst { it.id.equals(imp.id, ignoreCase = true) }
@@ -122,9 +124,21 @@ fun VaultData.mergeImport(p: QtVaultPayload): ImportStats {
         }
     }
 
-    for ((key, value) in p.secrets) {
-        if (secrets.putIfAbsent(key, value) == null) sec++
+    for (imp in p.gitCommands.orEmpty()) {
+        val idx = gitCommands.indexOfFirst { it.id.equals(imp.id, ignoreCase = true) }
+        if (idx < 0) {
+            gitCommands.add(imp.copy(updatedAt = imp.updatedAt ?: now))
+            gc++
+        } else if (imp.copy(updatedAt = gitCommands[idx].updatedAt) != gitCommands[idx]) {
+            gitCommands[idx] = imp.copy(updatedAt = now)
+        }
     }
 
-    return ImportStats(added, updated, k, sn, sec)
+    sec = VaultMerge.mergeSecrets(secrets, p.secrets)
+
+    p.cmdHistory?.let { cmdHistory = VaultMerge.mergeCmdHistory(cmdHistory, it) }
+    p.cmdHistoryScopes?.let { VaultMerge.mergeScopes(cmdHistoryScopes, it) }
+    p.cmdDictUser?.let { VaultMerge.mergeDict(cmdDictUser, it) }
+
+    return ImportStats(added, updated, k, sn, sec, gc)
 }
