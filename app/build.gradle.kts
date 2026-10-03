@@ -16,8 +16,8 @@ android {
         applicationId = "org.qterm.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 38
-        versionName = "3.8.0"
+        versionCode = 311
+        versionName = "3.11.0"
 
         // OAuth Google: client id из gradle.properties (qterm.gdriveClientId=…)
         buildConfigField("String", "GDRIVE_CLIENT_ID", "\"$gdriveClientId\"")
@@ -78,6 +78,10 @@ dependencies {
     // Терминал и SSH — стек ConnectBot (Apache-2.0), заточен под Android
     implementation("org.connectbot:termlib:0.1.0")
     implementation("org.connectbot:sshlib:2.2.48")
+
+    // «Ноды 3x-ui» / AWG: HTTP к панелям (свой TLS «не проверять», cookie-сессии) и QR-коды
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.zxing:core:3.5.3")
 
     // OAuth для Google Drive
     implementation("net.openid:appauth:0.11.1")

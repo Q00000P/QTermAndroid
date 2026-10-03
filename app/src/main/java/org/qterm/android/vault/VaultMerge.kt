@@ -1,5 +1,7 @@
 package org.qterm.android.vault
 
+import org.qterm.android.xui.XuiStore
+
 /**
  * Правила слияния — зеркало SyncEngine.merge мака и SyncMerge винды.
  * Общие для синка и импорта .qtvault.
@@ -29,12 +31,21 @@ object VaultMerge {
         return taken
     }
 
-    /** Секреты: локальный приоритет + доливка; "sync.*" других платформ не берём. */
+    /**
+     * Секреты: локальный приоритет + доливка; "sync.*" других платформ не берём.
+     * Исключение — «Ноды 3x-ui» (xui.panel:*, xui.names): LWW по updatedAt внутри записи
+     * (канон винды/мака), иначе новый токен/пароль панели с другого устройства не доехал бы.
+     */
     fun mergeSecrets(local: MutableMap<String, String>, remote: Map<String, String>): Int {
         var n = 0
         for ((k, v) in remote) {
             if (k.startsWith("sync.")) continue
-            if (local.putIfAbsent(k, v) == null) n++
+            val l = local[k]
+            if (l == null) {
+                local[k] = v; n++
+            } else if (XuiStore.isLww(k) && l != v && XuiStore.remoteNewer(l, v)) {
+                local[k] = v; n++
+            }
         }
         return n
     }

@@ -54,12 +54,15 @@ import org.qterm.android.ui.CmdHistorySheet
 import org.qterm.android.ui.SyncSheet
 import org.qterm.android.ui.TerminalScreen
 import org.qterm.android.vault.*
+import org.qterm.android.xui.XuiCenter
+import org.qterm.android.xui.XuiScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         VaultRepo.init(applicationContext)
         SyncEngine.init(applicationContext)
+        XuiCenter.init(applicationContext)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Root()
@@ -104,10 +107,32 @@ fun Root() {
 
     var showFiles by rememberSaveable { mutableStateOf(false) }
     var editorOpen by rememberSaveable { mutableStateOf(false) }
+    var xuiOpen by rememberSaveable { mutableStateOf(false) }
+
+    // «Нода из выделения» из терминала → экран «Ноды 3x-ui»
+    LaunchedEffect(XuiCenter.nodeAddRequest) {
+        if (XuiCenter.nodeAddRequest != null) xuiOpen = true
+    }
+    // «Обновления» отправили команду в SSH-терминал — показать его
+    LaunchedEffect(XuiCenter.openTerminalRequest) {
+        XuiCenter.openTerminalRequest?.let { id ->
+            XuiCenter.openTerminalRequest = null
+            if (TermRegistry.isOpen(id)) {
+                activeId = id
+                showFiles = false
+                xuiOpen = false
+            }
+        }
+    }
 
     // редактор поверх всего; вкладки живут в EditorRegistry, «назад» только прячет
     if (editorOpen && EditorRegistry.docs.isNotEmpty()) {
         EditorScreen(onClose = { editorOpen = false })
+        return
+    }
+
+    if (xuiOpen) {
+        XuiScreen(onBack = { xuiOpen = false })
         return
     }
 
@@ -129,6 +154,7 @@ fun Root() {
                 showFiles = false
             },
             onFiles = { showFiles = true },
+            onXui = { xuiOpen = true },
         )
     } else {
         HostsScreen(
@@ -141,6 +167,7 @@ fun Root() {
                 if (EditorRegistry.docs.isEmpty()) EditorRegistry.newScratch()
                 editorOpen = true
             },
+            onXui = { xuiOpen = true },
         )
     }
 }
@@ -151,6 +178,7 @@ fun HostsScreen(
     vault: VaultData,
     onOpen: (Session) -> Unit,
     onOpenEditor: () -> Unit,
+    onXui: () -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -292,6 +320,14 @@ fun HostsScreen(
                             DropdownMenuItem(
                                 text = { Text("Импорт .qtvault") },
                                 onClick = { overflow = false; picker.launch(arrayOf("*/*")) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Ноды 3x-ui и AWG…") },
+                                onClick = { overflow = false; onXui() },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Нода из выделения (3x-ui / AWG)") },
+                                onClick = { overflow = false; XuiCenter.requestNodeAdd(XuiCenter.clipboardText()) },
                             )
                             DropdownMenuItem(
                                 text = { Text("Синхронизация…") },

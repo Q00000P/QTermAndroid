@@ -52,6 +52,7 @@ fun TerminalScreen(
     onList: () -> Unit,
     onDisconnect: () -> Unit,
     onFiles: () -> Unit,
+    onXui: () -> Unit,
 ) {
     // имя берём из вейлта — переименование живой ноды видно сразу
     val session = VaultRepo.session(open.session.id) ?: open.session
@@ -142,6 +143,18 @@ fun TerminalScreen(
                     DropdownMenuItem(
                         text = { Text("Список нод") },
                         onClick = { menuOpen = false; onList() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Ноды 3x-ui и AWG…") },
+                        onClick = { menuOpen = false; onXui() },
+                    )
+                    DropdownMenuItem(
+                        // выдели итог установщика в терминале и скопируй — отсюда он и берётся
+                        text = { Text("Нода из выделения (3x-ui / AWG)") },
+                        onClick = {
+                            menuOpen = false
+                            org.qterm.android.xui.XuiCenter.requestNodeAdd(org.qterm.android.xui.XuiCenter.clipboardText())
+                        },
                     )
                     DropdownMenuItem(
                         text = { Text("Отключить «${session.name}»") },
