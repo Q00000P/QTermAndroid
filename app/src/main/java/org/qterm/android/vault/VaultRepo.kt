@@ -286,6 +286,11 @@ object VaultRepo {
         if (i >= 0) v.gitCommands[i] = v.gitCommands[i].copy(deleted = true, updatedAt = nowIso())
     }
 
+    // ------------------------------------------------------ «Ноды 3x-ui»
+
+    /** Секрет вейлта (панели/токены 3x-ui и AWG: "xui.*") — уходит в синк. */
+    fun putSecret(key: String, value: String) = mutate { v -> v.secrets[key] = value }
+
     // ------------------------------------------------------------- синк
 
     fun setSyncConfig(cfg: SyncConfig) = mutate(push = false) { v -> v.syncConfig = cfg }
