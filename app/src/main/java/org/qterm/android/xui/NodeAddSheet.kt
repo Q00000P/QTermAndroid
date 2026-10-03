@@ -195,7 +195,7 @@ class NodeAddModel(selection: String) {
         replaceId = guess?.id ?: ""
         val rep = (it.replace ?: (guess != null)) && cands.isNotEmpty() && guess != null
         replaceMode = rep
-        if (rep && guess != null && it.replace == null) it.name = guess.name
+        if (rep && it.replace == null) guess?.let { g -> it.name = g.name }
     }
 
     fun setKind(i: Int) {

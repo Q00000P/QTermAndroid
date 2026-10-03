@@ -32,6 +32,7 @@ fun AboutSheet(onDismiss: () -> Unit) {
     val keys = v?.sshKeys?.count { it.deleted != true } ?: 0
     val snippets = v?.snippets?.count { it.deleted != true } ?: 0
     val git = v?.gitCommands?.count { it.deleted != true } ?: 0
+    val xuiPanels = org.qterm.android.xui.XuiStore.panels()
     val commands = v?.cmdHistory?.count { it.value.deleted != true } ?: 0
     val dictCustom = v?.cmdDictUser?.count { it.value.deleted != true } ?: 0
     val backend = when (v?.syncConfig?.backend) {
@@ -77,6 +78,10 @@ fun AboutSheet(onDismiss: () -> Unit) {
             InfoRow("Ключи", "$keys")
             InfoRow("Сниппеты", "$snippets")
             InfoRow("Команды Git", "$git")
+            InfoRow(
+                "Панели 3x-ui / AWG",
+                "${xuiPanels.count { it.isXui }} / ${xuiPanels.count { it.isAwg }}",
+            )
             InfoRow("Команд в журнале", "$commands")
             InfoRow("Своих в словаре", "$dictCustom")
             InfoRow("Открытых сессий", "${TermRegistry.all().size}")
