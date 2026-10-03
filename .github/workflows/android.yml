@@ -1,0 +1,52 @@
+name: android
+
+# Проверка сборки на каждый пуш: assembleDebug + юнит-тесты, debug-APK — в артефакты.
+# Подпись в CI — свой debug-ключ раннера: Google Drive API (OAuth привязан к SHA-1 твоего ключа)
+# с этим APK не войдёт. Для работы собирай у себя: ./gradlew installDebug
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: gradle.properties (в репо его нет — локальный)
+        run: |
+          printf 'org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\nkotlin.code.style=official\n' > gradle.properties
+
+      - name: Сборка и тесты
+        run: |
+          set +e
+          ./gradlew --no-daemon assembleDebug testDebugUnitTest \
+            --tests 'org.qterm.android.xui.*' --tests 'org.qterm.android.editor.*' --tests 'org.qterm.android.ssh.*' \
+            > build.log 2>&1
+          status=$?
+          tail -n 60 build.log
+          # ошибки компилятора/тестов — в аннотации (видно через API без скачивания логов)
+          grep -E "^e: |error:|FAILED|What went wrong|Unresolved reference|Exception" build.log | sort -u | head -n 60 | while IFS= read -r l; do
+            echo "::error::${l:0:900}"
+          done
+          if [ $status -ne 0 ]; then
+            grep -A8 "What went wrong" build.log | head -n 20 | while IFS= read -r l; do echo "::warning::${l:0:900}"; done
+          fi
+          exit $status
+
+      - name: Версия
+        id: ver
+        run: echo "version=$(grep -m1 'versionName' app/build.gradle.kts | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QTerm-android-${{ steps.ver.outputs.version }}-debug
+          path: app/build/outputs/apk/debug/*.apk
