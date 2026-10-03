@@ -55,9 +55,11 @@ fun XuiScreen(onBack: () -> Unit) {
 
     BackHandler { onBack() }
 
-    // панели могли поменяться синком / с других экранов
-    val vault = VaultRepo.data
-    LaunchedEffect(vault) {
+    // панели могли поменяться синком / с других экранов (data публикуется тем же экземпляром —
+    // ключ эффекта — отпечаток записей xui.*)
+    @Suppress("UNUSED_VARIABLE") val vault = VaultRepo.data
+    val sig = XuiStore.signature()
+    LaunchedEffect(sig) {
         m.loadMasters()
         m.loadAwgPanels()
     }
@@ -779,7 +781,11 @@ private fun UpdatesTab(m: XuiModel, saveFile: (String, ByteArray) -> Unit) {
                 SheetItem("Откатить панель к этому бэкапу…") { bakMenu = null; XuiCenter.launch { m.rollbackToBackup() } }
                 SheetItem("Сохранить файл…") {
                     bakMenu = null
-                    runCatching { java.io.File(b.path).readBytes() }.onSuccess { saveFile(b.fileName, it) }
+                    XuiCenter.launch {
+                        withContext(Dispatchers.IO) { runCatching { java.io.File(b.path).readBytes() } }
+                            .onSuccess { saveFile(b.fileName, it) }
+                            .onFailure { m.log("✗ ${it.message}", LogKind.ERR) }
+                    }
                 }
                 SheetItem("Удалить с телефона…", MaterialTheme.colorScheme.error) { bakMenu = null; XuiCenter.launch { m.deleteBackup(b) } }
                 Spacer(Modifier.height(16.dp))

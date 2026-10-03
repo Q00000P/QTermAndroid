@@ -56,8 +56,10 @@ private object TrustAll : X509TrustManager {
 class XuiHttp(val label: String, verifyTls: Boolean, cookies: Boolean, timeoutSec: Long = 40) {
 
     private val client: OkHttpClient = base.newBuilder().apply {
-        callTimeout(timeoutSec, TimeUnit.SECONDS)
+        // как timeoutIntervalForRequest мака: таймаут ПРОСТОЯ, не всего запроса —
+        // база панели на десятки МБ по мобильной сети качается дольше 40 с
         readTimeout(timeoutSec, TimeUnit.SECONDS)
+        writeTimeout(timeoutSec, TimeUnit.SECONDS)
         connectTimeout(minOf(timeoutSec, 20), TimeUnit.SECONDS)
         if (cookies) cookieJar(MemoryCookies())
         if (!verifyTls) {
@@ -333,7 +335,7 @@ class XuiApi(val label: String, url: String, token: String, val verifyTls: Boole
 
     suspend fun createToken(name: String, scope: String): String? {
         val o = post("/setting/apiTokens/create", J.body("name" to name, "scope" to scope, "expiresAt" to 0)) as? JsonObject
-        return (o?.get("token") as? JsonPrimitive)?.content
+        return J.str(o, "token").ifEmpty { null }
     }
 
     // ------------------------------------------- обновления панели / ядро Xray / база

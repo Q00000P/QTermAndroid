@@ -288,6 +288,8 @@ object VaultRepo {
 
     // ------------------------------------------------------ «Ноды 3x-ui»
 
+    fun secretsSnapshot(): Map<String, String> = synchronized(this) { HashMap(data?.secrets ?: emptyMap()) }
+
     /** Секрет вейлта (панели/токены 3x-ui и AWG: "xui.*") — уходит в синк. */
     fun putSecret(key: String, value: String) = mutate { v -> v.secrets[key] = value }
 

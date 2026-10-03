@@ -938,7 +938,8 @@ class XuiModel {
         val names = cl.map { it.name }.filter { it.isNotEmpty() }.toSet().sortedBy { it.lowercase() }
         val fresh = store.panel(id) ?: return
         if (names.isEmpty() && !fresh.clients.isNullOrEmpty()) return
-        if (fresh.clients == names) return
+        // множествами: мак сортирует ICU-коллацией, иначе устройства перезаписывали бы запись по кругу
+        if (fresh.clients?.toSet() == names.toSet()) return
         store.save(fresh.copy(clients = names))
     }
 

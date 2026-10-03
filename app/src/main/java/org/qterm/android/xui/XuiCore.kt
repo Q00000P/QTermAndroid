@@ -264,7 +264,11 @@ object XuiStore {
     const val PANEL_PREFIX = "xui.panel:"
     const val NAMES_KEY = "xui.names"
 
-    private fun secrets(): Map<String, String> = VaultRepo.data?.secrets ?: emptyMap()
+    /** Копия под замком вейлта: синк мержит секреты с IO-потока. */
+    private fun secrets(): Map<String, String> = VaultRepo.secretsSnapshot()
+
+    /** Отпечаток записей xui.* — экран перечитывает панели, когда он меняется (синк, другие экраны). */
+    fun signature(): Int = secrets().filterKeys { isLww(it) }.hashCode()
 
     private fun put(key: String, value: String) = VaultRepo.putSecret(key, value)
 
