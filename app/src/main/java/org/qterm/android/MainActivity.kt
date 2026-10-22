@@ -5,7 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +22,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.Lan
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
@@ -56,14 +59,27 @@ import org.qterm.android.ui.TerminalScreen
 import org.qterm.android.vault.*
 import org.qterm.android.xui.XuiCenter
 import org.qterm.android.xui.XuiScreen
+import org.qterm.android.qdash.QDJobScreen
+import org.qterm.android.qdash.QDJobs
+import org.qterm.android.qdash.QDashBio
+import org.qterm.android.qdash.QDashCenter
+import org.qterm.android.qdash.QDashPortalScreen
+import org.qterm.android.qdash.QDashScreen
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
+    override fun onResume() {
+        super.onResume()
+        QDashBio.attach(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         VaultRepo.init(applicationContext)
         SyncEngine.init(applicationContext)
         XuiCenter.init(applicationContext)
         org.qterm.android.update.UpdateCenter.init(applicationContext)
+        QDashCenter.init(applicationContext)
+        QDashBio.attach(this)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Root()
@@ -132,6 +148,24 @@ fun Root() {
         return
     }
 
+    // QDash: вкладка задачи хаба → портал → экран QDash (поверх всего, как окна мака)
+    if (QDashCenter.jobOpen) {
+        val jt = QDJobs.active ?: QDJobs.tabs.lastOrNull()
+        if (jt != null) {
+            QDJobScreen(jt, onBack = { QDashCenter.jobOpen = false })
+            return
+        }
+        QDashCenter.jobOpen = false
+    }
+    if (QDashCenter.portalOpen && QDashCenter.portalTabs.isNotEmpty()) {
+        QDashPortalScreen(onBack = { QDashCenter.portalOpen = false })
+        return
+    }
+    if (QDashCenter.screenOpen) {
+        QDashScreen(onBack = { QDashCenter.screenOpen = false })
+        return
+    }
+
     if (xuiOpen) {
         XuiScreen(onBack = { xuiOpen = false })
         return
@@ -169,6 +203,7 @@ fun Root() {
                 editorOpen = true
             },
             onXui = { xuiOpen = true },
+            onQDash = { QDashCenter.screenOpen = true },
         )
     }
 }
@@ -180,6 +215,7 @@ fun HostsScreen(
     onOpen: (Session) -> Unit,
     onOpenEditor: () -> Unit,
     onXui: () -> Unit,
+    onQDash: () -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -327,6 +363,10 @@ fun HostsScreen(
                                 onClick = { overflow = false; onXui() },
                             )
                             DropdownMenuItem(
+                                text = { Text("QDash — хаб сети…") },
+                                onClick = { overflow = false; onQDash() },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Нода из выделения (3x-ui / AWG)") },
                                 onClick = { overflow = false; XuiCenter.requestNodeAdd(XuiCenter.clipboardText()) },
                             )
@@ -395,6 +435,10 @@ fun HostsScreen(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // плитки как в сайдбаре мака / шапке винды: 3x-ui · QDash · Синк
+                if (query.isBlank()) item(key = "__tiles") {
+                    HomeTiles(onXui = onXui, onQDash = onQDash, onSync = { syncSheet = true })
+                }
                 items(visible, key = { it.id }) { s ->
                     HostCard(
                         s = s,
@@ -607,4 +651,39 @@ private fun ImportPasswordDialog(onCancel: () -> Unit, onOk: (String) -> Unit) {
         },
         dismissButton = { TextButton(onClick = onCancel) { Text("Отмена") } },
     )
+}
+
+/** Плитки главного экрана: значок + заголовок + подзаголовок (как сайдбар мака 2×2). */
+@Composable
+private fun HomeTiles(onXui: () -> Unit, onQDash: () -> Unit, onSync: () -> Unit) {
+    @Suppress("UNUSED_VARIABLE") val v = VaultRepo.data // подписка: подзаголовки из вейлта
+    val master = remember(v) { org.qterm.android.xui.XuiStore.panels().firstOrNull { it.isMaster }?.name }
+    val hubs = remember(v) { org.qterm.android.qdash.QDashStore.hubs() }
+    val sync by SyncEngine.status.collectAsState()
+    val syncSub = when (val st = sync) {
+        is SyncEngine.Status.Running -> "синхронизация…"
+        is SyncEngine.Status.Ok -> "ок · " + st.at.take(16).replace("T", " ")
+        is SyncEngine.Status.Error -> "ошибка"
+        else -> if (v?.syncConfig?.enabled == true) "включён" else "выключен"
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Tile("3x-ui", master ?: "главная не задана", Icons.Default.Hub, Color(0xFF3F7CAC), Modifier.weight(1f), onXui)
+        Tile("QDash", hubs.firstOrNull()?.display ?: "хабов нет", Icons.Default.Lan, Color(0xFF5C946E), Modifier.weight(1f), onQDash)
+        Tile("Синк", syncSub, Icons.Default.Sync, Color(0xFF9A6FB0), Modifier.weight(1f), onSync)
+    }
+}
+
+@Composable
+private fun Tile(title: String, sub: String, icon: androidx.compose.ui.graphics.vector.ImageVector, color: Color, modifier: Modifier, onClick: () -> Unit) {
+    Card(shape = RoundedCornerShape(12.dp), modifier = modifier.clickable(onClick = onClick)) {
+        Column(Modifier.padding(10.dp)) {
+            Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(color), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        }
+    }
 }

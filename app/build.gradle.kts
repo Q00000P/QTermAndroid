@@ -140,6 +140,11 @@ dependencies {
     // Локальный вейлт — этап Argon2id + биометрия
     implementation("com.lambdapioneer.argon2kt:argon2kt:1.6.0")
     implementation("androidx.biometric:biometric:1.1.0")
+    // BiometricPrompt живёт на FragmentActivity (QDash: калитка и ключ подтверждения)
+    implementation("androidx.fragment:fragment-ktx:1.8.6")
+
+    // QDash: ed25519 (ключ устройства), X25519 + HKDF + ChaCha20-Poly1305 (конверт) — лёгкий API без JCA-провайдера
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
 
     testImplementation("junit:junit:4.13.2")
 }

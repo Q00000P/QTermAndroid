@@ -32,8 +32,15 @@ object VaultMerge {
     }
 
     /**
+     * Секреты с LWW по updatedAt внутри записи (канон мака SyncEngine.mergeSecrets и винды):
+     * «Ноды 3x-ui» и каскады (xui.*), хабы QDash (qdash.*), список ключей API (qkeys.*).
+     */
+    fun isLwwSecret(k: String): Boolean =
+        k.startsWith("xui.") || k.startsWith("qdash.") || k.startsWith("qkeys.")
+
+    /**
      * Секреты: локальный приоритет + доливка; "sync.*" других платформ не берём.
-     * Исключение — «Ноды 3x-ui» (xui.panel:*, xui.names): LWW по updatedAt внутри записи
+     * Исключение — isLwwSecret (xui.*, qdash.*, qkeys.*): LWW по updatedAt внутри записи
      * (канон винды/мака), иначе новый токен/пароль панели с другого устройства не доехал бы.
      */
     fun mergeSecrets(local: MutableMap<String, String>, remote: Map<String, String>): Int {
@@ -43,7 +50,7 @@ object VaultMerge {
             val l = local[k]
             if (l == null) {
                 local[k] = v; n++
-            } else if (XuiStore.isLww(k) && l != v && XuiStore.remoteNewer(l, v)) {
+            } else if (isLwwSecret(k) && l != v && XuiStore.remoteNewer(l, v)) {
                 local[k] = v; n++
             }
         }
