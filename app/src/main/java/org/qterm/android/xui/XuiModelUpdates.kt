@@ -226,7 +226,7 @@ suspend fun XuiModel.recoverToken(p: XuiPanel, api: XuiApi): Boolean {
         val r = XuiCenter.issueAndSave(cur.id, c.login, c.pass, c.twoFa.ifEmpty { null })
         if (r.token != null) token = r.token else XuiCenter.choose("«${cur.name}»: ${r.message}", "Ноды 3x-ui", listOf("OK"))
     }
-    api.setToken(token ?: return false)
+    api.setToken(token)
     log("  ✓ «${cur.name}»: новый токен выпущен и сохранён в QTerm", LogKind.OK)
     return true
 }
