@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import org.qterm.android.vault.AuthMethod
 import org.qterm.android.vault.Session
 import org.qterm.android.vault.VaultData
+import org.qterm.android.vault.VaultRepo
 
 /**
  * Редактор сессии (новая/правка). Ключ выбирается из хранилища вейлта;
@@ -86,8 +87,9 @@ fun SessionEditorSheet(
 
             // пикер ключа из вейлта
             var keyMenu by remember { mutableStateOf(false) }
+            var showPaste by remember { mutableStateOf(false) }
             val keyName = keyID?.let { id ->
-                vault.sshKeys.firstOrNull { it.id.equals(id, ignoreCase = true) }?.name ?: "ключ не найден ($id)"
+                (VaultRepo.data ?: vault).sshKeys.firstOrNull { it.id.equals(id, ignoreCase = true) }?.name ?: "ключ не найден ($id)"
             } ?: "Без ключа (пароль)"
             Box {
                 OutlinedButton(onClick = { keyMenu = true }, modifier = Modifier.fillMaxWidth()) {
@@ -104,6 +106,19 @@ fun SessionEditorSheet(
                             onClick = { keyID = k.id; keyMenu = false },
                         )
                     }
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("＋ Вставить ключ из буфера…") },
+                        onClick = { keyMenu = false; showPaste = true },
+                    )
+                }
+            }
+            // новый ключ сразу выбирается; отмена — выбор остаётся прежним (keyID не трогали)
+            if (showPaste) {
+                val n = name.trim()
+                KeyPasteDialog(defaultName = if (n.isEmpty()) "" else "$n-key") { key ->
+                    showPaste = false
+                    if (key != null) keyID = key.id
                 }
             }
             Spacer(Modifier.height(8.dp))
