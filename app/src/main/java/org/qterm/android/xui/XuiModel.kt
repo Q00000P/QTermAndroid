@@ -98,8 +98,15 @@ data class ConnectResult(
     val saveToken: Boolean,
 )
 
-/** Выбор строки из списка (версии ядра/панели); можно вписать свою. */
-class PickRequest(val title: String, val text: String, val items: List<String>, val selected: String?, val ok: String = "Выбрать") {
+/** Выбор строки из списка (версии ядра/панели); можно вписать свою. field — подсказка поля ввода. */
+class PickRequest(
+    val title: String,
+    val text: String,
+    val items: List<String>,
+    val selected: String?,
+    val ok: String = "Выбрать",
+    val field: String = "Версия",
+) {
     val done = CompletableDeferred<String?>()
 }
 
@@ -185,6 +192,8 @@ class XuiModel {
     val noMaster: Boolean get() = masters.isEmpty()
 
     init {
+        // автоперевыпуск токена (401) пишет в журнал экрана
+        XuiCenter.notice = { s, k -> log(s, k) }
         namesText = store.names().lines.joinToString("\n")
         loadMasters()
         loadAwgPanels()
@@ -709,6 +718,56 @@ class XuiModel {
 
     suspend fun nodeSync(r: NodeRow) {
         runSync("Выровнять клиентов · ${r.name}", "Все клиенты главной → узел «${r.name}»", syncItems(clients, listOf(r.src.id)))
+    }
+
+    /**
+     * Узел — с главной долой, сервер остаётся сам по себе: выключить узел (главная перестаёт слать
+     * изменения на ноду) → удалить его инбаунды на главной (на ноде они остаются) → удалить узел →
+     * токен node-sync главной на ноде отозвать. Подписка главной больше узел не содержит.
+     */
+    suspend fun nodeRemove(r: NodeRow) {
+        val ibs = inbounds.filter { it.nodeId == r.src.id }
+        if (!XuiCenter.confirm(
+                "Убрать узел «${r.name}» (${r.address}) с главной?\n\n" +
+                    "1) бэкап базы главной;\n2) узел выключается — главная перестаёт слать на него изменения;\n" +
+                    "3) его инбаунды на главной удаляются (${ibs.joinToString(", ") { it.remark }}) — НА САМОЙ НОДЕ они остаются и работают;\n" +
+                    "4) узел удаляется, токен главной на ноде отзывается (если токен ноды есть в QTerm).\n\n" +
+                    "Из единой подписки нода пропадёт. Клиенты на главной остаются; подключить ноду обратно — «＋ Подключить ноду…».",
+                "Убрать узел", "Убрать",
+            )
+        ) return
+        runOp("Убрать узел ${r.name}") { m ->
+            val path = XuiBackups.save(m, masterPanel?.name ?: m.label)
+            log("  ✓ бэкап главной → $path", LogKind.OK)
+            if (r.src.enable) {
+                m.setNodeEnable(r.src.id, false)
+                log("  ✓ узел выключен", LogKind.OK)
+            }
+            for (ib in ibs) {
+                m.deleteInbound(ib.id)
+                log("  ✓ инбаунд «${ib.remark}» убран с главной", LogKind.OK)
+            }
+            m.deleteNode(r.src.id)
+            log("  ✓ узел «${r.name}» удалён с главной", LogKind.OK)
+            // токен node-sync, который главная держала на ноде, больше не нужен
+            val saved = r.saved
+            if (saved != null) {
+                try {
+                    val node = XuiApi.forPanel(saved)
+                    val toks = node.apiTokens().filter {
+                        J.str(it, "scope") == "node-sync" && J.str(it, "name").startsWith("qterm-master-")
+                    }
+                    for (t in toks) {
+                        node.deleteApiToken(J.int(t, "id"))
+                        log("  ✓ на ноде отозван токен «${J.str(t, "name")}»", LogKind.OK)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log("  ! токен главной на ноде не отозван: ${e.message}", LogKind.WARN)
+                }
+            }
+        }
     }
 
     suspend fun nodeToken(r: NodeRow) {

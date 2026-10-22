@@ -25,7 +25,18 @@ sealed class XDialog(val title: String, val text: String) {
     class Info(title: String, text: String) : XDialog(title, text)
     class Choose(title: String, text: String, val buttons: List<String>, val done: CompletableDeferred<Int>) : XDialog(title, text)
     class Ask(title: String, text: String, val value: String, val done: CompletableDeferred<String?>) : XDialog(title, text)
+    /** Логин / пароль / код 2FA. */
+    class Credentials(title: String, text: String, val login: String, val done: CompletableDeferred<XCreds?>) : XDialog(title, text)
+    /** Форма из нескольких полей (подпись над каждым). */
+    class Form(title: String, text: String, val fields: List<XField>, val ok: String, val done: CompletableDeferred<List<String>?>) :
+        XDialog(title, text)
+    /** Секрет (новый токен/пароль) — выделяемым текстом и с кнопкой «Копировать». */
+    class Secret(title: String, text: String, val value: String, val done: CompletableDeferred<Unit>) : XDialog(title, text)
 }
+
+data class XCreds(val login: String, val pass: String, val twoFa: String)
+
+data class XField(val label: String, val value: String = "", val secure: Boolean = false)
 
 /**
  * Точка входа «Нод 3x-ui» (как XuiCenter мака): живёт вне композиции — операции над панелями
@@ -82,6 +93,75 @@ object XuiCenter {
     }
 
     fun close(d: XDialog) { dialogs.remove(d) }
+
+    /** Логин / пароль / код 2FA. null — «Пропустить» (или пустые логин/пароль). */
+    suspend fun credentials(text: String, title: String, login: String): XCreds? {
+        val d = CompletableDeferred<XCreds?>()
+        dialogs.add(XDialog.Credentials(title, text, login, d))
+        val c = d.await() ?: return null
+        val lg = c.login.trim()
+        if (lg.isEmpty() || c.pass.isEmpty()) return null
+        return XCreds(lg, c.pass, c.twoFa.trim())
+    }
+
+    /** Форма из нескольких полей. null — отмена. */
+    suspend fun form(text: String, title: String, fields: List<XField>, ok: String = "OK"): List<String>? {
+        val d = CompletableDeferred<List<String>?>()
+        dialogs.add(XDialog.Form(title, text, fields, ok, d))
+        return d.await()
+    }
+
+    /** Показать секрет (новый токен) — выделяемым текстом и с кнопкой «Копировать и закрыть». Ждёт закрытия. */
+    suspend fun secret(text: String, title: String, value: String) {
+        val d = CompletableDeferred<Unit>()
+        dialogs.add(XDialog.Secret(title, text, value, d))
+        d.await()
+    }
+
+    // ------------------------------------------------------------- токены панелей
+
+    /** Куда писать про автоперевыпуск токена (лог экрана «Ноды 3x-ui»). */
+    var notice: ((String, LogKind) -> Unit)? = null
+    private val reissued = HashMap<String, Pair<Long, Boolean>>()
+
+    data class Issued(val token: String?, val message: String, val needTwoFactor: Boolean = false)
+
+    /** Войти в панель логином/паролем, выпустить admin-токен, сохранить его вместе с логином и паролем. */
+    suspend fun issueAndSave(id: String, login: String, pass: String, twoFa: String? = null): Issued {
+        val p = XuiStore.panel(id) ?: return Issued(null, "панель не найдена")
+        return try {
+            val r = XuiLogin.issueToken(p.url, login, pass, twoFa, p.verifyTls, "qterm-${XuiLogin.stamp("yyMMdd-HHmmss")}")
+            val t = r.token
+            if (t.isNullOrEmpty()) {
+                Issued(null, if (r.needTwoFactor) "включена 2FA — нужен код" else r.message, r.needTwoFactor)
+            } else {
+                XuiStore.save(p.copy(login = login, pass = pass, token = t))
+                synchronized(reissued) { reissued[id] = System.currentTimeMillis() to true }
+                Issued(t, "новый токен выпущен и сохранён")
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Issued(null, e.message ?: "ошибка")
+        }
+    }
+
+    /** Панель не приняла токен (401): выпустить новый по сохранённым логину/паролю и сохранить. */
+    suspend fun reissueToken(id: String): String? {
+        val p = XuiStore.panel(id) ?: return null
+        val pass = p.pass
+        if (!p.isXui || p.login.isEmpty() || pass.isNullOrEmpty()) return null
+        // только что перевыпущен — старые копии панели на экране ещё со старым токеном; пароль не подошёл — не долбить вход
+        val now = System.currentTimeMillis()
+        synchronized(reissued) {
+            reissued[id]?.let { (at, ok) -> if (now - at < 60_000) return if (ok) p.token else null }
+            reissued[id] = now to false
+        }
+        notice?.invoke("  ↻ «${p.name}»: панель не приняла токен — выпускаю новый по сохранённому паролю", LogKind.WARN)
+        val r = issueAndSave(id, p.login, pass)
+        notice?.invoke("  ${if (r.token == null) "✗" else "✓"} «${p.name}»: ${r.message}", if (r.token == null) LogKind.ERR else LogKind.OK)
+        return r.token
+    }
 
     // ------------------------------------------------------------------ буфер
 

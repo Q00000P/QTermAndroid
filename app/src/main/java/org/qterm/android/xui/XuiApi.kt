@@ -1,6 +1,10 @@
 package org.qterm.android.xui
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -20,6 +24,9 @@ import java.net.SocketTimeoutException
 import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
@@ -147,11 +154,106 @@ class XuiHttp(val label: String, verifyTls: Boolean, cookies: Boolean, timeoutSe
 
 class XuiApi(val label: String, url: String, token: String, val verifyTls: Boolean = true) {
     val url: PanelURL = PanelURL.parse(url)
-    private val token: String = token.trim()
+    @Volatile private var token: String = token.trim()
     private val http = XuiHttp(label, verifyTls, cookies = false)
 
+    /** Перевыпуск токена при 401 (сохранённые логин/пароль админа). Один раз на объект API. */
+    var reauth: (suspend () -> String?)? = null
+    private var reauthTask: Deferred<String?>? = null
+    private val reauthLock = Mutex()
+
+    /** Токен перевыпускался (по 401) за время жизни объекта. */
+    @Volatile var reissued: Boolean = false
+        private set
+
+    val currentToken: String get() = token
+
+    /** Поставить новый токен (выпущен снаружи, напр. по паролю из диалога). */
+    suspend fun setToken(t: String) {
+        reauthLock.withLock { token = t; reauthTask = null }
+        reissued = true
+    }
+
+    /** Новый токен (один перевыпуск на объект; параллельные запросы ждут тот же). */
+    private suspend fun renewToken(): String? {
+        val r = reauth ?: return null
+        var mine: CompletableDeferred<String?>? = null
+        val task = reauthLock.withLock {
+            reauthTask ?: CompletableDeferred<String?>().also { mine = it; reauthTask = it }
+        }
+        mine?.let { d ->
+            val v = try {
+                r()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                d.complete(null); throw e
+            } catch (_: Exception) {
+                null
+            }
+            d.complete(v)
+        }
+        val t = task.await()
+        if (t.isNullOrEmpty()) return null
+        reauthLock.withLock { token = t }
+        reissued = true
+        return t
+    }
+
+    private val bearer: Map<String, String> get() = mapOf("Authorization" to "Bearer $token")
+
     companion object {
-        fun forPanel(p: XuiPanel) = XuiApi(p.name, p.url, p.token, p.verifyTls)
+        fun forPanel(p: XuiPanel): XuiApi {
+            val api = XuiApi(p.name, p.url, p.token, p.verifyTls)
+            if (p.isXui && p.login.isNotEmpty() && !p.pass.isNullOrEmpty()) {
+                val pid = p.id
+                api.reauth = { XuiCenter.reissueToken(pid) }
+            }
+            return api
+        }
+
+        /** 401 от панели: токен в QTerm ей неизвестен (удалён/выключен/истёк или панель переустановлена). */
+        fun unauthorized(label: String) = XuiError(
+            "$label: панель не принимает токен (401) — его удалили, выключили, он истёк или панель переустановлена. " +
+                "«Панели и токены…» → панель → логин и пароль админа → «Выпустить токен» (с сохранённым паролем QTerm дальше перевыпускает сам)",
+            401,
+        )
+
+        /** Токены панели с датой создания: «install · 03.10.2026 14:20 · admin». */
+        fun tokenSummaryOf(arr: JsonArray, zone: ZoneId = ZoneId.systemDefault()): String {
+            val f = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm").withZone(zone)
+            return arr.mapNotNull { it as? JsonObject }.joinToString("; ") { o ->
+                var at = J.long(o, "createdAt")
+                if (at > 100_000_000_000L) at /= 1000
+                val time = if (at > 0) f.format(Instant.ofEpochSecond(at)) else "?"
+                val off = if (J.isBool(o["enabled"]) && !J.bool(o, "enabled")) " · выкл" else ""
+                "${J.str(o, "name")} · $time · ${J.str(o, "scope")}$off"
+            }
+        }
+
+        /** Привязки инбаунда к серверу из streamSettings (объект или JSON-строкой). */
+        fun hostBound(raw: JsonElement?): List<String> {
+            var ss: JsonElement? = raw
+            (ss as? JsonPrimitive)?.takeIf { it.isString && it.content.isNotEmpty() }?.let { ss = J.parse(it.content) }
+            val st = ss as? JsonObject ?: return emptyList()
+            val out = mutableListOf<String>()
+            J.obj(st, "tlsSettings")?.let { t ->
+                val sn = J.str(t, "serverName")
+                if (sn.isNotEmpty()) out.add("SNI $sn")
+                J.arr(t, "certificates")?.forEach { c ->
+                    val f = J.str(c as? JsonObject, "certificateFile")
+                    if (f.isNotEmpty()) out.add("серт $f")
+                }
+            }
+            J.obj(st, "realitySettings")?.let { r ->
+                val target = J.str(r, "target").ifEmpty { J.str(r, "dest") }
+                val local = target.startsWith("127.") || target.startsWith("localhost") || target.startsWith("[::1]") ||
+                    target.startsWith("/") || target.toIntOrNull() != null
+                if (local) {
+                    out.add("Reality → $target")
+                    J.strings(J.arr(r, "serverNames")).filter { it.isNotEmpty() }.forEach { out.add("SNI $it") }
+                }
+            }
+            return out
+        }
 
         /** ClientRecord из /clients/list → тело /clients/update (model.Client). */
         fun clientPayload(
@@ -206,13 +308,16 @@ class XuiApi(val label: String, url: String, token: String, val verifyTls: Boole
         }
     }
 
-    private suspend fun raw(method: String, path: String, body: JsonElement?): Pair<Int, ByteArray> =
-        http.send(method, url.base + "/panel/api" + path, body, mapOf("Authorization" to "Bearer $token"))
+    private suspend fun raw(method: String, path: String, body: JsonElement?): Pair<Int, ByteArray> {
+        val r = http.send(method, url.base + "/panel/api" + path, body, bearer)
+        if (r.first != 401 || renewToken() == null) return r
+        return http.send(method, url.base + "/panel/api" + path, body, bearer)
+    }
 
     suspend fun call(method: String, path: String, body: JsonElement? = null): JsonElement? {
         val (code, data) = raw(method, path, body)
         when (code) {
-            401 -> throw XuiError("$label: токен не принят (401)")
+            401 -> throw unauthorized(label)
             403 -> throw XuiError("$label: 403 — токену не хватает прав или адрес не совпадает с доменом панели (webDomain)")
             404 -> throw XuiError("$label: 404 на $path — проверь базовый путь панели")
         }
@@ -273,6 +378,7 @@ class XuiApi(val label: String, url: String, token: String, val verifyTls: Boole
                 enable = J.bool(o, "enable", true),
                 nodeId = if (nid is JsonPrimitive && nid !is JsonNull && !nid.isString && !J.isBool(nid)) J.int(o, "nodeId") else null,
                 clientEmails = emails,
+                hostBound = hostBound(o["streamSettings"]),
             )
         }
 
@@ -309,6 +415,8 @@ class XuiApi(val label: String, url: String, token: String, val verifyTls: Boole
 
     suspend fun getDb(): ByteArray {
         val (code, data) = raw("GET", "/server/getDb", null)
+        if (code == 401) throw unauthorized(label)
+        if (code == 403) throw XuiError("$label: токену не хватает прав на скачивание базы (403) — нужен токен с правами admin")
         if (code != 200 || data.size < 16 || String(data, 0, 15, Charsets.US_ASCII) != "SQLite format 3") {
             throw XuiError("$label: не удалось скачать базу (HTTP $code)")
         }
@@ -330,6 +438,44 @@ class XuiApi(val label: String, url: String, token: String, val verifyTls: Boole
     suspend fun addNode(body: JsonObject): JsonObject? = post("/nodes/add", body) as? JsonObject
     suspend fun setNodeEnable(id: Int, enable: Boolean) { post("/nodes/setEnable/$id", J.body("enable" to enable)) }
     suspend fun probeNode(id: Int) { post("/nodes/probe/$id") }
+    suspend fun deleteNode(id: Int) { post("/nodes/del/$id") }
+    suspend fun deleteInbound(id: Int) { post("/inbounds/del/$id") }
+
+    /** API-токены панели (id, name, scope…). */
+    suspend fun apiTokens(): List<JsonObject> = ((get("/setting/apiTokens") as? JsonArray) ?: JsonArray(emptyList())).mapNotNull { it as? JsonObject }
+    suspend fun deleteApiToken(id: Int) { post("/setting/apiTokens/delete/$id") }
+
+    /** Токены панели с датой создания. Свежий install = базу создали заново (переустановка), а не потеряли токены при обновлении. */
+    suspend fun tokenSummary(): String = try {
+        val arr = get("/setting/apiTokens") as? JsonArray
+        if (arr == null) "не получил список" else tokenSummaryOf(arr)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        e.message ?: "ошибка"
+    }
+
+    /** Имена API-токенов на панели (null — не получилось). */
+    suspend fun tokenNames(): List<String>? = try {
+        (get("/setting/apiTokens") as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let { o -> J.str(o, "name") } }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Логин/пароль админа панели (нужны текущие; 2FA — код, если включена). Токены продолжают работать. */
+    suspend fun updateUser(oldLogin: String, oldPass: String, newLogin: String, newPass: String, twoFa: String?) {
+        post(
+            "/setting/updateUser",
+            J.body(
+                "oldUsername" to oldLogin, "oldPassword" to oldPass,
+                "newUsername" to newLogin, "newPassword" to newPass,
+                "twoFactorCode" to (twoFa ?: ""),
+            ),
+        )
+    }
+
     suspend fun nodeGet(id: Int): JsonObject = get("/nodes/get/$id") as? JsonObject ?: JsonObject(emptyMap())
     suspend fun nodeUpdate(id: Int, body: JsonObject) { post("/nodes/update/$id", body) }
 
@@ -361,11 +507,14 @@ class XuiApi(val label: String, url: String, token: String, val verifyTls: Boole
         val head = "--$boundary\r\nContent-Disposition: form-data; name=\"db\"; filename=\"x-ui.db\"\r\n" +
             "Content-Type: application/octet-stream\r\n\r\n"
         val body = head.toByteArray() + db + "\r\n--$boundary--\r\n".toByteArray()
-        val (code, data) = http.sendRaw(
+        suspend fun send() = http.sendRaw(
             "POST", url.base + "/panel/api/server/importDB", body,
-            "multipart/form-data; boundary=$boundary", mapOf("Authorization" to "Bearer $token"),
+            "multipart/form-data; boundary=$boundary", bearer,
         )
-        if (code == 401 || code == 403) throw XuiError("$label: нет прав на загрузку базы ($code)")
+        var (code, data) = send()
+        if (code == 401 && renewToken() != null) send().let { code = it.first; data = it.second }
+        if (code == 401) throw unauthorized(label)
+        if (code == 403) throw XuiError("$label: токену не хватает прав на загрузку базы (403) — нужен токен с правами admin")
         val js = J.parse(data) as? JsonObject
         if (js == null || !J.bool(js, "success")) {
             throw XuiError("$label: база не загрузилась: ${js?.let { J.str(it, "msg") } ?: "HTTP $code"}")

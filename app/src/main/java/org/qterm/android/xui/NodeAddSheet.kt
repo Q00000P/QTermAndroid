@@ -374,6 +374,21 @@ class NodeAddModel(selection: String) {
                 ?: nodes.firstOrNull { it.name.equals(old.name, ignoreCase = true) }
                 ?: continue
 
+            // Перепривязка = главная зальёт на новый сервер инбаунды узла как есть (SNI, пути сертификатов,
+            // Reality на локальный сайт) и снесёт инбаунды установщика. Годится только для переустановки
+            // на том же сервере с теми же доменами. Другой сервер — отдельным узлом.
+            val need = master.inbounds().filter { it.nodeId == hit.id }.flatMap { it.hostBound }.toSet()
+            val have = runCatching { XuiApi.forPanel(neu).inbounds() }.getOrDefault(emptyList()).flatMap { it.hostBound }.toSet()
+            val missing = (need - have).sorted()
+            if (missing.isNotEmpty()) {
+                log("✗ узел «${hit.name}» на главной «${m.name}» НЕ перепривязан: его инбаунды завязаны на домены и сертификаты прежнего сервера (${hit.address}), а на новом их нет:")
+                for (x in missing) log("    $x")
+                log("  Перепривязка залила бы их на новый сервер и снесла его собственные — отсюда чужой SNI и слетевшие серты.")
+                log("  Новый сервер подключаю к главной отдельным узлом, со своими инбаундами. Старый узел «${hit.name}» удали во «Узлах», когда проверишь новый (имена в подписке совпадут — до удаления будут дубли).")
+                connectId = neu.id
+                return
+            }
+
             val tname = "qterm-master-${XuiLogin.stamp("yyyyMMddHHmmss")}"
             var sync: String? = null
             try {
@@ -584,7 +599,9 @@ fun NodeAddSheet(selection: String, finish: (saved: List<Pair<String, String>>, 
             if (m.showRebind) {
                 SwitchRow(
                     "Перепривязать узел на главной (${m.masters.joinToString(", ") { it.name }}): новый адрес и токен node-sync. " +
-                        "Главная сама зальёт на ноду свои инбаунды и клиентов (те же UUID и ключи Reality).",
+                        "Главная сама зальёт на ноду свои инбаунды и клиентов (те же UUID и ключи Reality — у клиентов ничего не меняется); " +
+                        "инбаунды, созданные установщиком, она заменит. Только для переустановки на том же сервере с теми же доменами: " +
+                        "если у инбаундов узла SNI/сертификаты, которых на новом сервере нет, — не перепривяжу, а подключу новый сервер отдельным узлом.",
                     m.rebind,
                 ) { m.rebind = it }
             }

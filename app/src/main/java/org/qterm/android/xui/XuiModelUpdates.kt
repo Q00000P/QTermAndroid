@@ -145,22 +145,110 @@ private suspend fun XuiModel.backupOne(api: XuiApi, p: XuiPanel) {
     log("  ✓ бэкап «${p.name}» → $path", LogKind.OK)
 }
 
-/** Ждём, пока панель ответит и покажет нужную версию (или любую, если want == null). */
+/**
+ * Ждём, пока панель ответит и покажет нужную версию (или любую, если want == null).
+ * Панель поднялась, но токен не принимает (на ней пропали API-токены) — выпускаем новый по паролю.
+ */
 private suspend fun XuiModel.waitPanel(api: XuiApi, p: XuiPanel, want: String?, seconds: Int, what: String): String? {
     val t0 = System.currentTimeMillis()
+    var recovered = false
     while (System.currentTimeMillis() - t0 < seconds * 1000L) {
         delay(5000)
         val secs = (System.currentTimeMillis() - t0) / 1000
-        val st = runCatching { api.status() }.getOrNull()
-        if (st != null) {
+        try {
+            val st = api.status()
             val v = XuiBackups.norm(J.str(st, "panelVersion"))
             setState(p, "$what… $secs с, сейчас v$v")
             if (want == null || v == XuiBackups.norm(want)) return v
-        } else {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: XuiError) {
+            if (e.status != 401) { setState(p, "$what… панель перезапускается"); continue }
+            if (recovered) throw e
+            setState(p, "$what… панель поднялась, но не принимает токен")
+            log("  ! «${p.name}»: панель отвечает, но токен QTerm на ней больше не действует (API-токены пропали)", LogKind.WARN)
+            if (!recoverToken(p, api)) throw e
+            recovered = true
+        } catch (e: Exception) {
             setState(p, "$what… панель перезапускается")
         }
     }
     return null
+}
+
+// ------------------------------------------------------------------------- токены
+
+/** Перед рискованной операцией: есть пароль админа — токен восстановится сам; нет — спрашиваем и проверяем вход. */
+private suspend fun XuiModel.insure(p: XuiPanel): XuiPanel {
+    val cur = store.panel(p.id) ?: p
+    if (cur.login.isNotEmpty() && !cur.pass.isNullOrEmpty()) return cur
+    var login = cur.login
+    while (true) {
+        val c = XuiCenter.credentials(
+            "Если после операции панель перестанет принимать токен (бывает при обновлении — API-токены пропадают), QTerm войдёт этим логином " +
+                "и паролем, выпустит новый токен, сохранит и покажет. Пароль хранится в вейлте, синком — в зашифрованном виде.",
+            "Страховка токена «${cur.name}»", login,
+        )
+        if (c == null) {
+            log("  ! «${cur.name}»: без пароля — если токен пропадёт, выпустишь его в «Панели и токены…»", LogKind.WARN)
+            return cur
+        }
+        login = c.login
+        try {
+            val r = XuiLogin.issueToken(cur.url, c.login, c.pass, c.twoFa.ifEmpty { null }, cur.verifyTls, null)
+            if (r.ok) {
+                val np = cur.copy(login = c.login, pass = c.pass)
+                store.save(np)
+                log("  ✓ «${cur.name}»: логин и пароль проверены и сохранены", LogKind.OK)
+                return store.panel(p.id) ?: np
+            }
+            XuiCenter.choose("«${cur.name}»: ${r.message}", "Ноды 3x-ui", listOf("OK"))
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            XuiCenter.choose("«${cur.name}»: ${e.message}", "Ноды 3x-ui", listOf("OK"))
+        }
+    }
+}
+
+/** Панель не принимает токен: новый — по сохранённому паролю, иначе спросить; сохранить, поставить в api и показать. */
+suspend fun XuiModel.recoverToken(p: XuiPanel, api: XuiApi): Boolean {
+    val cur = store.panel(p.id) ?: p
+    var token: String? = null
+    if (cur.login.isNotEmpty() && !cur.pass.isNullOrEmpty()) token = XuiCenter.reissueToken(cur.id)
+    var login = cur.login
+    while (token == null) {
+        val c = XuiCenter.credentials(
+            "Панель «${cur.name}» не принимает токен QTerm. Войду логином и паролем админа и выпущу новый токен.",
+            "Новый токен «${cur.name}»", login,
+        ) ?: return false
+        login = c.login
+        val r = XuiCenter.issueAndSave(cur.id, c.login, c.pass, c.twoFa.ifEmpty { null })
+        if (r.token != null) token = r.token else XuiCenter.choose("«${cur.name}»: ${r.message}", "Ноды 3x-ui", listOf("OK"))
+    }
+    api.setToken(token)
+    log("  ✓ «${cur.name}»: новый токен выпущен и сохранён в QTerm", LogKind.OK)
+    return true
+}
+
+/** После операции: токен перевыпускался — какие токены были и какие остались на панели, показать новый. */
+private suspend fun XuiModel.reportTokens(p: XuiPanel, api: XuiApi, before: List<String>?) {
+    if (!api.reissued) return
+    val after = api.tokenNames() ?: emptyList()
+    if (before != null) {
+        val gone = before.filter { it !in after }
+        log(
+            "  · «${p.name}»: API-токены до: ${if (before.isEmpty()) "—" else before.joinToString(", ")}" +
+                if (gone.isEmpty()) "" else "; пропали: ${gone.joinToString(", ")}",
+            LogKind.DIM,
+        )
+    }
+    log("  · «${p.name}»: токены сейчас: ${api.tokenSummary()}", LogKind.DIM)
+    XuiCenter.secret(
+        "Панель «${p.name}» перестала принимать старый токен — выпущен новый, он уже сохранён в QTerm. Если этот токен нужен где-то ещё " +
+            "(скрипты, другая главная), скопируй. Держи его в переменной окружения, не в коде.",
+        "Новый API-токен «${p.name}»", api.currentToken,
+    )
 }
 
 // ------------------------------------------------------------------ самообновление
@@ -173,15 +261,20 @@ suspend fun XuiModel.updatePanels() {
     }
     // ноды первыми: новая главная шлёт узлам поля, которых старый узел может не понять
     val order = sel.sortedWith(compareBy<XuiPanel>({ if (it.isMaster) 1 else 0 }, { it.name.lowercase() }))
-    if (!XuiCenter.confirm(
-            "Обновить по очереди: ${order.joinToString(" → ") { it.name }}\n\n" +
-                "Каждая: бэкап базы → самообновление панели (update.sh с GitHub) → ждём, пока поднимется с новой версией. " +
-                "На первой ошибке останавливаюсь. Откат — внизу, из бэкапа.\n\nСовет: свежий релиз сначала поставь на одну ноду и проверь.",
-            "Обновление панелей", "Обновить",
-        )
-    ) return
+    val steps = "бэкап базы → самообновление панели (update.sh с GitHub) → ждём, пока поднимется с новой версией."
+    val text = if (order.size == 1) {
+        val i = updInfo[order[0].id] ?: UpdInfo()
+        "Обновить «${order[0].name}» (v${i.version} → v${i.latest}): $steps Откат — внизу, из бэкапа." +
+            if (order[0].isMaster) "\n\nЭто главная: если на нодах версия старее — сначала обнови их." else ""
+    } else {
+        "Обновить по очереди (${order.size}): ${order.joinToString(" → ") { it.name }}\n\n" +
+            "Каждая: $steps На первой ошибке останавливаюсь. Откат — внизу, из бэкапа.\n\nСовет: свежий релиз сначала поставь на одну ноду и проверь."
+    }
+    if (!XuiCenter.confirm(text, "Обновление панелей", "Обновить")) return
+    // страховка: без пароля админа пропавший после обновления токен сам не восстановить
+    val insured = order.map { insure(it) }
     updOp("Обновление панелей") {
-        for (p in order) {
+        for (p in insured) {
             edit(p) { it.copy(busy = true) }
             try {
                 val api = XuiApi.forPanel(p)
@@ -198,6 +291,7 @@ suspend fun XuiModel.updatePanels() {
                     continue
                 }
                 backupOne(api, p)
+                val tokensBefore = api.tokenNames()
                 setState(p, "обновляю…")
                 val runId = api.startUpdate()
                 log("  … «${p.name}»: обновление запущено (v$from)", LogKind.DIM)
@@ -213,6 +307,7 @@ suspend fun XuiModel.updatePanels() {
                 if (state == "failed") throw XuiError("апдейтер завершился с ошибкой (журнал: x-ui log на сервере)")
                 val now = waitPanel(api, p, null, 120, "жду панель")
                     ?: throw XuiError("панель не поднялась за 2 минуты после обновления")
+                reportTokens(p, api, tokensBefore)
                 if (now == from) throw XuiError("версия не поменялась (v$now) — смотри журнал апдейтера на сервере")
                 edit(p) { it.copy(version = now, available = false) }
                 setState(p, "✓ v$from → v$now")
@@ -361,18 +456,20 @@ suspend fun XuiModel.rollbackToBackup() {
     installViaTerminal(p, "v${b.version}", b)
 }
 
-private suspend fun XuiModel.installViaTerminal(p: XuiPanel, tag: String, restore: XuiBackup?) {
-    val sess = withContext(Dispatchers.IO) { store.sessionFor(p) }
+private suspend fun XuiModel.installViaTerminal(target: XuiPanel, tag: String, restore: XuiBackup?) {
+    val sess = withContext(Dispatchers.IO) { store.sessionFor(target) }
     if (sess == null) {
-        XuiCenter.info("Для «${p.name}» не найдена SSH-сессия QTerm (ни по адресу, ни по IP). Привяжи её в «Панели и токены…» → «SSH-сессия».")
+        XuiCenter.info("Для «${target.name}» не найдена SSH-сессия QTerm (ни по адресу, ни по IP). Привяжи её в «Панели и токены…» → «SSH-сессия».")
         return
     }
     val cmd = xuiInstallCommand(tag, sess.username)
+    val p = insure(target)
     updOp("«${p.name}» → $tag" + if (restore == null) "" else " + база из бэкапа") {
         edit(p) { it.copy(busy = true) }
         try {
             val api = XuiApi.forPanel(p)
             backupOne(api, p)
+            val tokensBefore = api.tokenNames()
             setState(p, "команда отправлена в терминал «${sess.name}»")
             if (!XuiCenter.runInTerminal(sess.id, cmd)) {
                 XuiCenter.copy(cmd, null)
@@ -390,6 +487,7 @@ private suspend fun XuiModel.installViaTerminal(p: XuiPanel, tag: String, restor
                     ?: throw XuiError("после загрузки базы панель не ответила за 90 с")
                 log("  ✓ «${p.name}»: база из ${restore.fileName} на месте", LogKind.OK)
             }
+            reportTokens(p, api, tokensBefore)
             setState(p, "✓ v$v" + if (restore == null) "" else " + база из бэкапа")
         } catch (e: Exception) {
             setState(p, "✗ ${e.message}", error = true)
@@ -415,8 +513,8 @@ private fun XuiModel.panelForBackup(b: XuiBackup): XuiPanel? {
 suspend fun XuiModel.restoreBackup() {
     val b = bakRows.firstOrNull { it.id == bakSel }
     if (b == null) { XuiCenter.info("Выбери бэкап в списке"); return }
-    val p = panelForBackup(b) ?: return
-    val cur = updInfo[p.id]?.version ?: ""
+    val found = panelForBackup(b) ?: return
+    val cur = updInfo[found.id]?.version ?: ""
     var warn = ""
     if (b.version.isNotEmpty() && cur.isNotEmpty() && b.version != cur) {
         warn = if (XuiBackups.compare(b.version, cur) < 0) {
@@ -426,11 +524,12 @@ suspend fun XuiModel.restoreBackup() {
         }
     }
     if (!XuiCenter.confirm(
-            "Загрузить в «${p.name}» базу из ${b.fileName} (${XuiModel.fmt(b.time)})?\nПеред этим сниму бэкап текущей базы. " +
+            "Загрузить в «${found.name}» базу из ${b.fileName} (${XuiModel.fmt(b.time)})?\nПеред этим сниму бэкап текущей базы. " +
                 "Адреса, сертификаты и привязка узла этой машины сохраняются; панель перезапустится.$warn",
             "Восстановление базы", "Восстановить",
         )
     ) return
+    val p = insure(found)
     updOp("Восстановление базы «${p.name}»") {
         edit(p) { it.copy(busy = true) }
         try {
@@ -440,6 +539,7 @@ suspend fun XuiModel.restoreBackup() {
             api.importDb(withContext(Dispatchers.IO) { File(b.path).readBytes() })
             waitPanel(api, p, null, 90, "панель перезапускается")
                 ?: throw XuiError("после загрузки базы панель не ответила за 90 с")
+            reportTokens(p, api, null)
             setState(p, "✓ база от ${XuiModel.fmt(b.time)} на месте")
             log("  ✓ «${p.name}»: база из ${b.fileName} загружена", LogKind.OK)
         } catch (e: Exception) {
