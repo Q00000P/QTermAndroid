@@ -130,7 +130,10 @@ class QDashPortalBridge(private val hubId: String, private val hubName: String) 
     fun save(name: String, text: String) { onSave?.invoke(name, text) }
 
     @JavascriptInterface
-    fun copy(text: String) { XuiCenter.copy(text) }
+    fun copy(text: String) {
+        // мост JS зовёт на своём потоке без Looper — Toast там падает
+        android.os.Handler(android.os.Looper.getMainLooper()).post { XuiCenter.copy(text) }
+    }
 
     private fun page(title: String, text: String, status: Int = 200): WebResourceResponse {
         val esc = { s: String -> s.replace("&", "&amp;").replace("<", "&lt;") }
@@ -306,7 +309,14 @@ private fun PortalWebView(t: QDashCenter.PortalTab, hubName: String, visible: Bo
     val ctx = LocalContext.current
     val bridge = remember(t.n) { QDashPortalBridge(t.hubId, hubName) }
     bridge.onLog = { s -> android.os.Handler(android.os.Looper.getMainLooper()).post { onLog(s) } }
-    bridge.onOpen = { u -> android.os.Handler(android.os.Looper.getMainLooper()).post { QDashCenter.openPortal(t.hubId, u) } }
+    bridge.onOpen = { u ->
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            // свой origin — новой вкладкой; чужой http(s) (дашборд роутера, KeenDNS) — системным браузером, иначе вкладка с 403
+            val p = Uri.parse(u)
+            if (p.scheme == "https" && p.host == "qdash.hub") QDashCenter.openPortal(t.hubId, u)
+            else if (p.scheme == "http" || p.scheme == "https") runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, p).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        }
+    }
     bridge.onSave = { n, txt -> android.os.Handler(android.os.Looper.getMainLooper()).post { onSave(n, txt) } }
     var fullView by remember { mutableStateOf<View?>(null) }
     var lastReload by remember(t.n) { mutableIntStateOf(t.reload) }

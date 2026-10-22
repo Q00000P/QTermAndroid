@@ -87,7 +87,9 @@ class QDashClient(
             var url = ""; var code = ""; var fp = ""; var name = ""; var enc = ""
             for (part in q.split('&')) {
                 val k = part.substringBefore('=')
-                val v = pctDecode(part.substringAfter('=', ""))
+                // Go url.Values.Encode: пробел → «+», сам «+» → %2B; литеральный «+» оставляем только в k (base64, вставленный руками)
+                val raw = part.substringAfter('=', "")
+                val v = pctDecode(if (k == "k") raw else raw.replace('+', ' '))
                 when (k) {
                     "u" -> url = QDashStore.trimSlash(v)
                     "c" -> code = v
@@ -218,7 +220,10 @@ class QDashClient(
                 if (k == null || s == null) throw QDashError(401, "ключ устройства не заведён")
                 val ts = (System.currentTimeMillis() / 1000).toString()
                 val n = nonce()
-                val sig = QDashCrypto.sign(s, QDashCrypto.signingBasis(method, uri, ts, n, body).toByteArray(Charsets.UTF_8))
+                // подписываем ровно то, что уйдёт в строке запроса: OkHttp канонизирует путь/запрос (|^{}`, не-ASCII, %), хаб сверяет r.URL.RequestURI()
+                val u = rb.build().url
+                val wire = u.encodedPath + (u.encodedQuery?.let { "?$it" } ?: "")
+                val sig = QDashCrypto.sign(s, QDashCrypto.signingBasis(method, wire, ts, n, body).toByteArray(Charsets.UTF_8))
                 rb.header("X-QD-Device", k.dev).header("X-QD-Time", ts).header("X-QD-Nonce", n)
                     .header("X-QD-Sig", Base64.getEncoder().encodeToString(sig))
             }
@@ -402,7 +407,7 @@ class QDashClient(
         return try {
             val rep = sendOne(r, "GET", "/api/dev/whoami", null)
             val ms = (System.currentTimeMillis() - t0).toInt()
-            if (rep.status == 200) Triple(true, "ок", ms) else Triple(false, "HTTP ${rep.status}: ${errText(rep)}", ms)
+            if (rep.status == 200 && J.bool(rep.json, "ok")) Triple(true, "ок", ms) else Triple(false, "HTTP ${rep.status}: ${errText(rep)}", ms)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

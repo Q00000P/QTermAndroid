@@ -609,6 +609,8 @@ fun QDashAddSheet(into: QDashHub?, done: (QDashHub?) -> Unit) {
                 status = "завожу…"
                 XuiCenter.launch {
                     val devName = name.trim().ifEmpty { defName }
+                    // адрес руками без схемы (как винда) — https://
+                    val url = url.trim().let { if (it.contains("://")) it else "https://$it" }
                     try {
                         val r = QDashClient.claim(url, fp, code, devName)
                         val linkEnc = enc.trim()

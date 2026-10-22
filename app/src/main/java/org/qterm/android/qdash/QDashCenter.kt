@@ -22,7 +22,10 @@ object QDashCenter {
 
     /** Хаб просит код 2FA → диалог (что подтверждаем, тир). */
     suspend fun askCode(what: String, tierName: String): String? =
-        XuiCenter.ask("Хаб просит код подтверждения (2FA): $what\nТир: $tierName.", title = "QDash")
+        // портал зовёт это с потока WebView (runBlocking в shouldInterceptRequest) — список диалогов трогаем только с главного
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            XuiCenter.ask("Хаб просит код подтверждения (2FA): $what\nТир: $tierName.", title = "QDash")
+        }
 
     private fun wire(c: QDashClient, h: QDashHub): QDashClient {
         c.askCode = { what, tier -> askCode(what, tier) }

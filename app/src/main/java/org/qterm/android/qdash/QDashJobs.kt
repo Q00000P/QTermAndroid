@@ -210,4 +210,6 @@ fun QDJobScreen(t: QDJobTab, onBack: () -> Unit) {
             K("n⏎") { t.input("n\n".toByteArray()) }
         }
     }
+    // «Остановить?» и код 2FA/палец для /api/jobs/input|kill — без хоста диалогов они висят невидимыми
+    org.qterm.android.xui.XuiDialogHost()
 }
