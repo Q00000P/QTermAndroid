@@ -1,0 +1,141 @@
+name: android-release
+
+# Релиз QTerm Android в приватный Q00000P/QTerm-releases (тег android-X.Y.Z, QTerm-android-X.Y.Z.apk +
+# version-android.json) — то же, что make-release-android.sh на маке.
+# Запуск: push тега android-X.Y.Z (должен совпадать с versionName) или вручную (Actions → Run workflow).
+# Секреты репо QTermAndroid (make-android-keystore.sh кладёт первые четыре):
+#   QTERM_KEYSTORE_B64, QTERM_KEYSTORE_PASSWORD, QTERM_KEY_ALIAS, QTERM_KEY_PASSWORD — release-подпись
+#   QTERM_UPDATE_TOKEN  — read-only токен QTerm-releases, вшивается в APK
+#   QTERM_RELEASE_TOKEN — токен с записью Contents в QTerm-releases, им публикуется релиз
+#   QTERM_GDRIVE_CLIENT_ID_RELEASE — (необязательно) Android OAuth client id под release-SHA-1
+on:
+  push:
+    tags: ['android-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      REPO: Q00000P/QTerm-releases
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Секреты на месте
+        env:
+          KS: ${{ secrets.QTERM_KEYSTORE_B64 }}
+          KSP: ${{ secrets.QTERM_KEYSTORE_PASSWORD }}
+          UT: ${{ secrets.QTERM_UPDATE_TOKEN }}
+          RT: ${{ secrets.QTERM_RELEASE_TOKEN }}
+        run: |
+          miss=""
+          [ -n "$KS" ]  || miss="$miss QTERM_KEYSTORE_B64"
+          [ -n "$KSP" ] || miss="$miss QTERM_KEYSTORE_PASSWORD"
+          [ -n "$UT" ]  || miss="$miss QTERM_UPDATE_TOKEN"
+          [ -n "$RT" ]  || miss="$miss QTERM_RELEASE_TOKEN"
+          if [ -n "$miss" ]; then echo "::error::Нет секретов:$miss (make-android-keystore.sh, README.md)"; exit 1; fi
+
+      - name: Версия
+        id: ver
+        run: |
+          v=$(grep -m1 'versionName' app/build.gradle.kts | cut -d'"' -f2)
+          c=$(grep -m1 'versionCode' app/build.gradle.kts | grep -oE '[0-9]+')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "code=$c" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "android-$v" ]; then
+            echo "::error::Тег ${GITHUB_REF_NAME} не совпадает с versionName $v (ожидался android-$v)"; exit 1
+          fi
+
+      - name: Токен обновлений читает QTerm-releases
+        env:
+          UT: ${{ secrets.QTERM_UPDATE_TOKEN }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $UT" \
+            -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/$REPO")
+          [ "$code" = "200" ] || { echo "::error::QTERM_UPDATE_TOKEN не читает $REPO (HTTP $code)"; exit 1; }
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: gradle.properties (в репо его нет — локальный)
+        env:
+          GDRIVE_REL: ${{ secrets.QTERM_GDRIVE_CLIENT_ID_RELEASE }}
+        run: |
+          printf 'org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\nkotlin.code.style=official\n' > gradle.properties
+          if [ -n "$GDRIVE_REL" ]; then printf 'qterm.gdriveClientIdRelease=%s\n' "$GDRIVE_REL" >> gradle.properties
+          else echo "::warning::Нет QTERM_GDRIVE_CLIENT_ID_RELEASE — вход в Google Drive в этом APK не заработает"; fi
+
+      - name: Сборка release
+        env:
+          QTERM_KEYSTORE_B64: ${{ secrets.QTERM_KEYSTORE_B64 }}
+          QTERM_KEYSTORE_PASSWORD: ${{ secrets.QTERM_KEYSTORE_PASSWORD }}
+          QTERM_KEY_ALIAS: ${{ secrets.QTERM_KEY_ALIAS }}
+          QTERM_KEY_PASSWORD: ${{ secrets.QTERM_KEY_PASSWORD }}
+          QTERM_UPDATE_TOKEN: ${{ secrets.QTERM_UPDATE_TOKEN }}
+        run: |
+          ./gradlew --no-daemon assembleRelease testReleaseUnitTest --tests 'org.qterm.android.update.*'
+          rm -f app/build/qterm-release.jks
+          apk=app/build/outputs/apk/release/app-release.apk
+          [ -f "$apk" ] || { echo "::error::Нет подписанного $apk"; ls app/build/outputs/apk/release/; exit 1; }
+          unzip -p "$apk" 'classes*.dex' | LC_ALL=C grep -aq "$QTERM_UPDATE_TOKEN" || { echo "::error::Токен обновлений не вшился"; exit 1; }
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$bt/apksigner" verify --print-certs "$apk" | grep -E 'SHA-256 digest|SHA-1 digest'
+
+      - name: APK и манифест
+        id: out
+        run: |
+          v=${{ steps.ver.outputs.version }}
+          tag="android-$v"
+          apk="QTerm-android-$v.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$apk"
+          sha=$(sha256sum "$apk" | awk '{print $1}')
+          cat > version-android.json <<JSON
+          {
+            "version": "$v",
+            "versionCode": ${{ steps.ver.outputs.code }},
+            "sha256": "$sha",
+            "url": "https://github.com/$REPO/releases/download/$tag/$apk",
+            "page": "https://github.com/$REPO/releases/tag/$tag",
+            "published": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          JSON
+          cat version-android.json
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "apk=$apk" >> "$GITHUB_OUTPUT"
+
+      - name: Публикация в QTerm-releases
+        env:
+          GH_TOKEN: ${{ secrets.QTERM_RELEASE_TOKEN }}
+          TAG: ${{ steps.out.outputs.tag }}
+          APK: ${{ steps.out.outputs.apk }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          vis=$(gh repo view "$REPO" --json visibility -q .visibility)
+          [ "$vis" = "PRIVATE" ] || { echo "::error::$REPO не приватный ($vis) — публиковать туда не буду"; exit 1; }
+          if ! gh api "repos/$REPO/commits?per_page=1" >/dev/null 2>&1; then
+            echo "$REPO пуст — кладу стартовый README"
+            gh api -X PUT "repos/$REPO/contents/README.md" -f message="init: релизы QTerm" \
+              -f content="$(printf '# QTerm releases\n\nРелизы QTerm: macOS — теги v*, Windows — win-*, Android — android-*. Приватный; приложение читает по токену.\n' | base64 -w0)" >/dev/null
+          fi
+          notes="release-notes/android-$VERSION.md"
+          [ -f "$notes" ] || notes="release-notes/$VERSION.md"
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            echo "Релиз $TAG уже есть — заменяю файлы"
+          elif [ -f "$notes" ]; then
+            gh release create "$TAG" -R "$REPO" --title "QTerm для Android $VERSION" --notes-file "$notes"
+          else
+            gh release create "$TAG" -R "$REPO" --title "QTerm для Android $VERSION" --notes "QTerm $VERSION для Android."
+          fi
+          gh release upload "$TAG" -R "$REPO" "$APK" version-android.json --clobber
+          echo "::notice::Опубликовано: https://github.com/$REPO/releases/tag/$TAG"
