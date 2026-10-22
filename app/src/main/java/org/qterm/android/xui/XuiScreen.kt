@@ -127,6 +127,13 @@ fun XuiScreen(onBack: () -> Unit) {
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "Меню") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                             DropdownMenuItem(text = { Text("Панели и токены…") }, onClick = { menu = false; m.showPanels = true })
+                            // Каскад — в портале QDash (как на маке и винде: «переехал в портал»)
+                            DropdownMenuItem(text = { Text("Каскад (портал QDash)…") }, onClick = {
+                                menu = false
+                                val hub = org.qterm.android.qdash.QDashStore.hubs().firstOrNull { org.qterm.android.qdash.QDashStore.key(it.id) != null }
+                                if (hub == null) XuiCenter.info("Каскад ведётся в портале QDash, а на этом телефоне нет хаба с ключом устройства — заведи его: главный экран → QDash.", "Каскад")
+                                else org.qterm.android.qdash.QDashCenter.openPortal(hub.id, org.qterm.android.qdash.QD_PORTAL_HOME + "#/nodes")
+                            })
                             DropdownMenuItem(
                                 text = { Text("＋ Нода из выделения") },
                                 onClick = { menu = false; m.nodeAdd = XuiCenter.clipboardText() },
