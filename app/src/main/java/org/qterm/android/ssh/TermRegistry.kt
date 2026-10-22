@@ -26,6 +26,12 @@ object TermRegistry {
         var fileOps: FileOps? = null
         var browserPath: String? = null
         val fileMutex = Mutex()
+
+        /** Монитор ноды: опрос включает экран терминала (resume/pause). */
+        val monitor = NodeMonitor(
+            connection = { controller.connection() },
+            connected = { controller.state.value == TermState.Connected },
+        )
     }
 
     /** Инкремент на любое изменение реестра — подписка для Compose. */
@@ -69,6 +75,7 @@ object TermRegistry {
             onKeyboardInput = { controller.write(it) },
             onResize = { d -> controller.resize(d.columns, d.rows) },
         )
+        controller.inputHook = Broadcast.hookFor(id)
         controller.start(emulator)
 
         val open = Open(session, controller, emulator)
@@ -78,12 +85,18 @@ object TermRegistry {
     }
 
     fun close(id: String) {
-        map.remove(id)?.controller?.close()
+        map.remove(id)?.let {
+            it.monitor.dispose()
+            it.controller.close()
+        }
         version++
     }
 
     fun closeAll() {
-        map.values.forEach { it.controller.close() }
+        map.values.forEach {
+            it.monitor.dispose()
+            it.controller.close()
+        }
         map.clear()
         version++
     }

@@ -31,6 +31,8 @@ import kotlinx.coroutines.launch
 import org.connectbot.terminal.ModifierManager
 import org.connectbot.terminal.Terminal
 import org.connectbot.terminal.VTermKey
+import org.qterm.android.ssh.Broadcast
+import org.qterm.android.ssh.MonitorPrefs
 import org.qterm.android.ssh.TermRegistry
 import org.qterm.android.ssh.TermState
 import org.qterm.android.vault.VaultRepo
@@ -69,7 +71,10 @@ fun TerminalScreen(
     val mods = remember(open.session.id) { StickyModifiers() }
     var snippetsOpen by remember { mutableStateOf(false) }
     var gitOpen by remember { mutableStateOf(false) }
+    var monitorOpen by remember { mutableStateOf(false) }
     val retryIn by controller.reconnectIn.collectAsState()
+    val ctx = LocalContext.current
+    LaunchedEffect(Unit) { MonitorPrefs.load(ctx) }
 
     fun pokeKeyboard() {
         scope.launch {
@@ -103,6 +108,22 @@ fun TerminalScreen(
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
+
+    // монитор: опрос только пока экран ноды на виду и приложение не в фоне
+    DisposableEffect(open.session.id) {
+        val obs = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> open.monitor.resume()
+                Lifecycle.Event.ON_STOP -> open.monitor.pause()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs) // в STARTED сразу придёт ON_START
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(obs)
+            open.monitor.pause()
+        }
     }
 
     Column(
@@ -157,6 +178,14 @@ fun TerminalScreen(
                         },
                     )
                     DropdownMenuItem(
+                        text = { Text(if (Broadcast.on) "Выключить «Во все ноды»" else "Включить «Во все ноды»") },
+                        onClick = { menuOpen = false; Broadcast.on = !Broadcast.on },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (MonitorPrefs.enabled) "Скрыть монитор ноды" else "Показать монитор ноды") },
+                        onClick = { menuOpen = false; MonitorPrefs.set(ctx, !MonitorPrefs.enabled) },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Отключить «${session.name}»") },
                         onClick = { menuOpen = false; onDisconnect() },
                     )
@@ -208,6 +237,13 @@ fun TerminalScreen(
             }
         }
 
+        // монитор + переключатель «Во все ноды» (полоса видна всегда — это и тумблер)
+        NodeStatusStrip(
+            open = open,
+            connected = st == TermState.Connected && MonitorPrefs.enabled,
+            onDetails = { monitorOpen = true },
+        )
+
         Box(Modifier.weight(1f)) {
             Terminal(
                 terminalEmulator = open.emulator,
@@ -226,7 +262,6 @@ fun TerminalScreen(
             // подсказки: вертикальный поповер у строки ввода, как на маке/в Термиусе
             val prefix by controller.cmdPrefix.collectAsState()
             if (prefix.isNotEmpty() && st == TermState.Connected) {
-                val ctx = LocalContext.current
                 val personal = VaultRepo.data?.cmdHistory
                     ?.filterValues { it.deleted != true }
                     ?.filterKeys { it.startsWith(prefix) && it != prefix }
@@ -281,6 +316,8 @@ fun TerminalScreen(
                 }
             }
 
+            BroadcastFlash(Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 8.dp))
+
             if (st == TermState.Disconnected && !controller.userClosed) {
                 Row(
                     Modifier
@@ -308,22 +345,26 @@ fun TerminalScreen(
             ctrlOn = mods.ctrl,
             onCtrl = { mods.ctrl = !mods.ctrl },
             onKey = { key -> open.emulator.dispatchKey(0, key) },
-            onText = { controller.send(it) },
+            onText = { if (it == "\u0003") Broadcast.interrupt(open) else controller.send(it) },
         )
     }
 
     if (snippetsOpen) {
         SnippetsSheet(
-            onInsert = { cmd, run -> controller.send(if (run) cmd + "\n" else cmd) },
+            onInsert = { cmd, run -> Broadcast.insert(open, cmd, run) },
             onDismiss = { snippetsOpen = false },
         )
     }
 
     if (gitOpen) {
         GitCommandsSheet(
-            onInsert = { cmd, run -> controller.send(if (run) cmd + "\n" else cmd) },
+            onInsert = { cmd, run -> Broadcast.insert(open, cmd, run) },
             onDismiss = { gitOpen = false },
         )
+    }
+
+    if (monitorOpen) {
+        NodeMonitorSheet(open, session.name, onDismiss = { monitorOpen = false })
     }
 
     when (val s = st) {
@@ -441,4 +482,42 @@ private fun PasswordPrompt(
         },
         dismissButton = { TextButton(onClick = onCancel) { Text("Отмена") } },
     )
+}
+
+/** Вспышка «→ N нод» после рассылки (WYSIWYG-броадкаст). */
+@Composable
+private fun BroadcastFlash(modifier: Modifier) {
+    val ev by Broadcast.events.collectAsState()
+    var shown by remember { mutableStateOf<Broadcast.Sent?>(null) }
+    LaunchedEffect(ev) {
+        val e = ev ?: return@LaunchedEffect
+        if (System.currentTimeMillis() - e.at > 1_500) return@LaunchedEffect
+        shown = e
+        delay(1_300)
+        shown = null
+    }
+    val e = shown ?: return
+    val (text, bg) = when {
+        e.unparsed -> "⇉ строка не распознана — не разослано" to Color(0xE0B71C1C)
+        e.count == 0 -> "⇉ нет других подключённых нод" to Color(0xE0424242)
+        else -> "→ ${e.count} ${nodesWord(e.count)}" to Color(0xE0E65100)
+    }
+    Text(
+        text,
+        color = Color.White,
+        style = MaterialTheme.typography.labelMedium,
+        modifier = modifier
+            .background(bg, RoundedCornerShape(6.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    )
+}
+
+private fun nodesWord(n: Int): String {
+    val m10 = n % 10
+    val m100 = n % 100
+    return when {
+        m10 == 1 && m100 != 11 -> "нода"
+        m10 in 2..4 && m100 !in 12..14 -> "ноды"
+        else -> "нод"
+    }
 }

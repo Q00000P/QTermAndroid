@@ -277,8 +277,30 @@ class TerminalController(
         }
     }
 
+    /** Наблюдатель клавиатуры («Во все ноды»): Enter приходит с видимой строкой. */
+    interface InputHook {
+        fun enabled(): Boolean
+        /** enter != null — это был Enter, строка с экрана (до сброса якоря). */
+        fun onInput(data: ByteArray, enter: BroadcastLine.Result?)
+    }
+
+    @Volatile var inputHook: InputHook? = null
+
     /** Клавиатура терминала → stdin ноды. */
     fun write(data: ByteArray) {
+        val hook = inputHook?.takeIf { it.enabled() }
+        // видимую строку читаем ДО трекера — он на Enter сбрасывает якорь промпта
+        val enter = if (hook != null && data.size == 1 && (data[0] == 0x0D.toByte() || data[0] == 0x0A.toByte())) {
+            synchronized(lineLock) {
+                val r = BroadcastLine.extract(promptAtStart, screen.text(), screen.altScreen)
+                // строку экрана не разобрать (перенос длинной строки), но набор
+                // чистый — без стрелок/Tab/вставки: набранное и есть команда
+                val typed = tracker.prefix.value.trim()
+                if (r == BroadcastLine.Result.Unparsed && typed.isNotEmpty()) BroadcastLine.Result.Cmd(typed) else r
+            }
+        } else {
+            null
+        }
         tracker.feed(data)
         exec.execute {
             try {
@@ -287,6 +309,7 @@ class TerminalController(
             } catch (_: Exception) {
             }
         }
+        hook?.onInput(data, enter)
     }
 
     /** Терминал перемерился → PTY той же геометрии. */
