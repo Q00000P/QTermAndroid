@@ -144,7 +144,7 @@ class MonitorParser {
         if (f.size >= 5 && f[0] == "cpu") {
             val vals = f.drop(1).mapNotNull { it.toLongOrNull() }
             if (vals.size >= 4) {
-                val idle = vals[3] + (if (vals.size > 4) vals[4] else 0)
+                val idle = vals[3] + (if (vals.size > 4) vals[4] else 0L)
                 val total = vals.sum()
                 if (prevIdle >= 0 && total > prevTotal && idle >= prevIdle) {
                     val busy = 1.0 - (idle - prevIdle).toDouble() / (total - prevTotal)
@@ -165,9 +165,9 @@ class MonitorParser {
             val v = l.substringAfter(':', "").trim().split(ws).firstOrNull()?.toLongOrNull() ?: continue
             mem[k] = v
         }
-        val memTotal = mem["MemTotal"] ?: 0
-        val avail = mem["MemAvailable"] ?: mem["MemFree"] ?: 0
-        val swapTotal = mem["SwapTotal"] ?: 0
+        val memTotal = mem["MemTotal"] ?: 0L
+        val avail = mem["MemAvailable"] ?: mem["MemFree"] ?: 0L
+        val swapTotal = mem["SwapTotal"] ?: 0L
         val swapFree = mem["SwapFree"] ?: swapTotal
 
         // аптайм
@@ -184,8 +184,8 @@ class MonitorParser {
             if (name.isEmpty() || name == "lo" || ' ' in name || '|' in name) continue
             val cols = l.substring(colon + 1).trim().split(ws)
             if (cols.size >= 9) {
-                rx += cols[0].toLongOrNull() ?: 0
-                tx += cols[8].toLongOrNull() ?: 0
+                rx += cols[0].toLongOrNull() ?: 0L
+                tx += cols[8].toLongOrNull() ?: 0L
             }
         }
         var rxMbps = 0.0
@@ -214,8 +214,8 @@ class MonitorParser {
             val mount = c[c.size - 1]
             if (mount !in WANT) continue
             val pct = c[c.size - 2].trimEnd('%').toIntOrNull() ?: continue
-            val total = c[c.size - 5].toLongOrNull() ?: 0
-            val used = c[c.size - 4].toLongOrNull() ?: 0
+            val total = c[c.size - 5].toLongOrNull() ?: 0L
+            val used = c[c.size - 4].toLongOrNull() ?: 0L
             val d = DiskStat(mount, pct, used, total, ro[mount] == true)
             // rootfs + /dev/root на одном «/» — берём настоящий (больший)
             val prev = disks[mount]
