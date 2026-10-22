@@ -181,7 +181,8 @@ class QDashClient(
 
     private fun http(r: Route): OkHttpClient = clients.getOrPut(r.url) {
         val https = r.url.lowercase().startsWith("https://")
-        if (!https && r.fp.isNotEmpty()) throw QDashError(0, "адрес ${r.url} без HTTPS, а отпечаток серта задан — так ходить нельзя")
+        // http с пином — этот путь пропускаем (как винда), остальные точки пробуются
+        if (!https && r.fp.isNotEmpty()) throw IllegalStateException("адрес ${r.url} без HTTPS, а отпечаток серта задан — так ходить нельзя")
         val b = OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(70, TimeUnit.SECONDS) // /api/jobs/out ждёт до 2 с; задачи — дольше
@@ -293,7 +294,8 @@ class QDashClient(
             val signer = confirmSigner
             val k = key
             if (signer != null && k != null && ch.isNotEmpty()) {
-                val msg = "QDASH-CONFIRM\n${k.dev}\n$ch\n${J.int(j, "tier")}".toByteArray(Charsets.UTF_8)
+                val tierN = if (j?.containsKey("tier") == true) J.int(j, "tier") else 2
+                val msg = "QDASH-CONFIRM\n${k.dev}\n$ch\n$tierN".toByteArray(Charsets.UTF_8)
                 val signed: ByteArray? = try {
                     signer(what0, msg)
                 } catch (e: CancellationException) {
@@ -325,8 +327,9 @@ class QDashClient(
             ?.trim()
         if (code.isNullOrEmpty()) throw QDashError(403, "отменено: код не введён", j)
         val tier = J.int(j, "tier")
-        unlock(code, if (tier == 0) 2 else tier, J.str(j, "method", method),
-            if (once) J.str(j, "path", uri.substringBefore('?')) else "")
+        // разовый пропуск: method/path — всегда, когда хаб их прислал (политика «каждое действие» без них даёт 400)
+        val path = if (once) J.str(j, "path", uri.substringBefore('?')) else J.str(j, "path")
+        unlock(code, if (tier == 0) 2 else tier, J.str(j, "method", method), path)
         lastConfirm = "код"
         return true
     }

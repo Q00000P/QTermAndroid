@@ -631,7 +631,8 @@ class QDashModel {
         if (ageKey.isBlank()) return
         op("Вооружить секунданта") { c ->
             val r = c.arm(e, ageKey)
-            log("✓ секундант вооружён" + (J.str(r, "copyName").let { if (it.isEmpty()) "" else ": развернул $it" }), LogKind.OK)
+            val copy = J.str(r, "name").ifEmpty { J.str(r, "copyName") }
+            log("✓ секундант вооружён" + (if (copy.isEmpty()) "" else ": развернул $copy"), LogKind.OK)
             whoami = null
         }
         refresh()

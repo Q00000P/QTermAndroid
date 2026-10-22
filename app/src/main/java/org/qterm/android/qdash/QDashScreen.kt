@@ -618,12 +618,12 @@ fun QDashAddSheet(into: QDashHub?, done: (QDashHub?) -> Unit) {
                             busy = false
                             return@launch
                         }
+                        // перезаведение (как винда): адрес, пин и ключ конверта — из новой ссылки, точки входа перечитаются
                         var hub = into?.let { QDashStore.hub(it.id) } ?: QDashStore.hubByUrlHost(url) ?: QDashHub()
-                        if (hub.url.isEmpty()) hub = hub.copy(url = QDashStore.trimSlash(url.trim()))
-                        if (hub.fp.isEmpty()) hub = hub.copy(fp = QDashClient.norm(fp))
+                        hub = hub.copy(url = QDashStore.trimSlash(url.trim()), fp = QDashClient.norm(fp), entries = null, lan = null, lanFp = null)
                         if (r.host.isNotEmpty()) hub = hub.copy(host = r.host)
                         if (hub.name.isEmpty()) hub = hub.copy(name = r.host.ifEmpty { runCatching { java.net.URI(url.trim()).host }.getOrNull() ?: url })
-                        if (hub.enc.isNullOrEmpty() && !(linkEnc.isEmpty() && r.enc.isEmpty())) {
+                        if (linkEnc.isNotEmpty() || r.enc.isNotEmpty()) {
                             hub = hub.copy(enc = linkEnc.ifEmpty { r.enc },
                                 encSource = if (linkEnc.isEmpty()) "из ответа хаба при заведении" else "из ссылки заведения (пин)")
                         }
