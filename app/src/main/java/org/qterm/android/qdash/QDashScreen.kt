@@ -289,8 +289,7 @@ private fun ServersTab(m: QDashModel) {
     Column {
         BtnRow {
             SmallBtn("Ноды QTerm → в хаб…", enabled = c != null && c.can(1)) { m.showPush = true }
-            Text(m.serversStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.align(Alignment.CenterVertically))
+            Text(m.serversStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (c != null && !c.can(1)) {
             Text("роль «${c.key?.roleName}» — только чтение; «в хаб» и правки — с ролью «обратимое» и выше",
