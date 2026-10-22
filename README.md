@@ -41,6 +41,45 @@ SSH-клиент для Android — порт QTerm для macOS. Общий фо
 
 Client id нужен только для бекенда «Drive API» (см. README-GDRIVE.md).
 
+## Обновления и release-подпись
+
+Как на маке и винде: релизы лежат в приватном `Q00000P/QTerm-releases` (теги `android-X.Y.Z`,
+файлы `QTerm-android-X.Y.Z.apk` + `version-android.json` с sha256). В APK вшит токен GitHub только
+на чтение этого репо; приложение проверяет релизы через 8 с после старта и раз в сутки (выключается в
+«О программе»), вручную — «О программе → Проверить обновления…». APK качается по токену, сверяется
+sha256 (манифест, иначе digest GitHub; без sha256 — только ссылка на страницу) и подпись, ставится через
+PackageInstaller (первый раз Android попросит разрешить «Установку неизвестных приложений»).
+Журнал — «О программе → Журнал обновлений» (`filesDir/update.log`).
+
+Поверх встаёт только APK с той же подписью, поэтому релизы подписываются одним ключом
+`~/.android/qterm-release.jks`. Debug-сборку (`installDebug`) поверх release не поставить и наоборот —
+переход один раз через удаление (вейлт заранее синкнуть или экспортировать).
+
+Один раз:
+
+    ~/dev/QTermAndroid/make-android-keystore.sh
+
+— создаёт ключ (RSA 4096, 10000 дней, alias `qterm`), печатает SHA-1, дописывает в
+`~/.gradle/gradle.properties` `qterm.release.storeFile/storePassword/keyAlias/keyPassword`
+и по желанию кладёт секреты подписи в GitHub Actions. **Бэкап jks и пароля обязателен.**
+Затем — второй OAuth-клиент Google под release-SHA-1 (README-GDRIVE.md, шаг 4б).
+
+Токены — те же, что у мака, в `~/.zshenv` (в гит не попадают):
+
+- `QTERM_UPDATE_TOKEN` — fine-grained, только `QTerm-releases`, Contents: Read-only; вшивается в
+  `BuildConfig.UPDATE_TOKEN` (можно и `qterm.updateToken=` в `~/.gradle/gradle.properties`).
+  Без него сборка работает, но проверка обновлений отключена с пояснением;
+- `QTERM_RELEASE_TOKEN` — Contents: Read and write на `QTerm-releases`, им публикуется релиз.
+
+Релиз с мака:
+
+    ~/dev/QTermAndroid/make-release-android.sh
+
+Или в CI: `git tag android-X.Y.Z && git push origin android-X.Y.Z` (или Actions → android-release →
+Run workflow). Нужные секреты репо: `QTERM_KEYSTORE_B64`, `QTERM_KEYSTORE_PASSWORD`, `QTERM_KEY_ALIAS`,
+`QTERM_KEY_PASSWORD`, `QTERM_UPDATE_TOKEN`, `QTERM_RELEASE_TOKEN`, по желанию `QTERM_GDRIVE_CLIENT_ID_RELEASE`.
+Без ключа подписи `assembleRelease` собирает неподписанный APK, `assembleDebug` не затрагивается.
+
 ## Формат синка (QTS1)
 
     "QTS1"(4) | t(1) | p(1) | m_kib(4 LE) | salt(16) | nonce(12) | AES-256-GCM(JSON)

@@ -63,6 +63,7 @@ class MainActivity : ComponentActivity() {
         VaultRepo.init(applicationContext)
         SyncEngine.init(applicationContext)
         XuiCenter.init(applicationContext)
+        org.qterm.android.update.UpdateCenter.init(applicationContext)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Root()

@@ -16,11 +16,24 @@
      keytool -list -v -keystore ~/.android/debug.keystore \
        -alias androiddebugkey -storepass android | grep SHA1
      ```
-5. Полученный Client ID (вида `1234-abc.apps.googleusercontent.com`) —
-   в `gradle.properties` проекта:
+   4б. **Для release-сборки — второй клиент.** Android OAuth-клиент Google привязан к паре
+   «пакет + SHA-1 подписи», а у debug- и release-ключа SHA-1 разные. Добавить второй SHA-1
+   в тот же клиент нельзя — нужен ещё один Android-клиент в том же проекте (QTerm):
+   Create credentials → OAuth client ID → Android, Package name `org.qterm.android`,
+   SHA-1 release-ключа (его печатает `make-android-keystore.sh`, или
+   `keytool -list -v -keystore ~/.android/qterm-release.jks -alias qterm | grep SHA1`).
+   У него будет **свой client id** — release-сборка должна использовать именно его (шаг 5).
+   Токен Диска, полученный в debug-сборке, release-сборке не подойдёт: после перехода на
+   release один раз заново «Войти в Google».
+5. Client ID (вида `1234-abc.apps.googleusercontent.com`) — в `~/.gradle/gradle.properties`
+   (в репо файла нет):
    ```
-   qterm.gdriveClientId=1234-abc.apps.googleusercontent.com
+   qterm.gdriveClientId=1234-abc.apps.googleusercontent.com          # debug-клиент
+   qterm.gdriveClientIdRelease=5678-def.apps.googleusercontent.com   # release-клиент (шаг 4б)
    ```
+   Debug-сборка берёт `qterm.gdriveClientId`, release — `qterm.gdriveClientIdRelease`
+   (если его нет — тоже `qterm.gdriveClientId`, и вход в release не заработает).
+   Для CI-релиза тот же id — секрет `QTERM_GDRIVE_CLIENT_ID_RELEASE` репо QTermAndroid.
 6. `./gradlew installDebug` → в приложении: ⋮ → Синхронизация → Google Drive →
    Войти в Google → выбрать папку (по имени, по умолчанию QTerm) → Синк сейчас.
 
