@@ -48,6 +48,21 @@ jobs:
           fi
           exit $status
 
+      - name: TEMP проверка assembleRelease (без ключа и с ключом из env)
+        run: |
+          set -e
+          ./gradlew --no-daemon assembleRelease
+          ls app/build/outputs/apk/release/
+          test -f app/build/outputs/apk/release/app-release-unsigned.apk
+          keytool -genkeypair -keystore /tmp/t.jks -storetype PKCS12 -alias qterm -keyalg RSA -keysize 2048 -validity 100 -storepass testpass -keypass testpass -dname CN=T
+          export QTERM_KEYSTORE_B64=$(base64 -w0 /tmp/t.jks) QTERM_KEYSTORE_PASSWORD=testpass QTERM_KEY_ALIAS=qterm QTERM_KEY_PASSWORD=testpass QTERM_UPDATE_TOKEN=github_pat_TESTTOKEN123
+          ./gradlew --no-daemon assembleRelease
+          ls app/build/outputs/apk/release/
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$bt/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk | head -5
+          unzip -p app/build/outputs/apk/release/app-release.apk 'classes*.dex' | LC_ALL=C grep -ac github_pat_TESTTOKEN123
+          "$bt/aapt2" dump xmltree --file AndroidManifest.xml app/build/outputs/apk/release/app-release.apk | grep -E "INSTALL_PACKAGES|UpdateInstallReceiver|scheme" 
+
       - name: Версия
         id: ver
         run: echo "version=$(grep -m1 'versionName' app/build.gradle.kts | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
