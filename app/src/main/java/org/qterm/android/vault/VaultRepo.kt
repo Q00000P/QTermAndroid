@@ -290,8 +290,10 @@ object VaultRepo {
 
     fun secretsSnapshot(): Map<String, String> = synchronized(this) { HashMap(data?.secrets ?: emptyMap()) }
 
-    /** Секрет вейлта (панели/токены 3x-ui и AWG: "xui.*") — уходит в синк. */
-    fun putSecret(key: String, value: String) = mutate { v -> v.secrets[key] = value }
+    /** Секрет вейлта (панели/токены 3x-ui и AWG "xui.*", хабы QDash "qdash.*") — уходит в синк; push=false — локальное ("sync.*"). */
+    fun putSecret(key: String, value: String, push: Boolean = true) = mutate(push) { v -> v.secrets[key] = value }
+
+    fun removeSecret(key: String, push: Boolean = true) = mutate(push) { v -> v.secrets.remove(key) }
 
     // ------------------------------------------------------------- синк
 
