@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -74,7 +75,7 @@ fun XuiDialogHost() {
                 title = { Text(d.title) },
                 text = {
                     Column(Modifier.verticalScroll(rememberScrollState())) {
-                        Text(d.text)
+                        SelectionContainer { Text(d.text) }
                         if (d.buttons.size > 2) {
                             Spacer(Modifier.height(12.dp))
                             d.buttons.forEachIndexed { i, b ->
@@ -99,13 +100,79 @@ fun XuiDialogHost() {
                 title = { Text(d.title) },
                 text = {
                     Column {
-                        Text(d.text)
+                        SelectionContainer { Text(d.text) }
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(v, { v = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     }
                 },
                 confirmButton = { TextButton(onClick = { done(v) }) { Text("OK") } },
                 dismissButton = { TextButton(onClick = { done(null) }) { Text("Отмена") } },
+            )
+        }
+        is XDialog.Credentials -> {
+            var login by remember(d) { mutableStateOf(d.login) }
+            var pass by remember(d) { mutableStateOf("") }
+            var twoFa by remember(d) { mutableStateOf("") }
+            fun done(r: XCreds?) { XuiCenter.close(d); d.done.complete(r) }
+            AlertDialog(
+                onDismissRequest = { done(null) },
+                title = { Text(d.title) },
+                text = {
+                    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        SelectionContainer { Text(d.text) }
+                        OutlinedTextField(login, { login = it }, singleLine = true, label = { Text("Логин админа") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(
+                            pass, { pass = it }, singleLine = true, label = { Text("Пароль админа") },
+                            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(twoFa, { twoFa = it }, singleLine = true, label = { Text("Код 2FA, если включена") }, modifier = Modifier.fillMaxWidth())
+                    }
+                },
+                confirmButton = { TextButton(onClick = { done(XCreds(login, pass, twoFa)) }) { Text("OK") } },
+                dismissButton = { TextButton(onClick = { done(null) }) { Text("Пропустить") } },
+            )
+        }
+        is XDialog.Form -> {
+            val values = remember(d) { mutableStateListOf(*d.fields.map { it.value }.toTypedArray()) }
+            fun done(r: List<String>?) { XuiCenter.close(d); d.done.complete(r) }
+            AlertDialog(
+                onDismissRequest = { done(null) },
+                title = { Text(d.title) },
+                text = {
+                    Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        SelectionContainer { Text(d.text) }
+                        d.fields.forEachIndexed { i, f ->
+                            OutlinedTextField(
+                                values[i], { values[i] = it }, singleLine = true, label = { Text(f.label) },
+                                visualTransformation = if (f.secure) PasswordVisualTransformation() else VisualTransformation.None,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { done(values.toList()) }) { Text(d.ok) } },
+                dismissButton = { TextButton(onClick = { done(null) }) { Text("Отмена") } },
+            )
+        }
+        is XDialog.Secret -> {
+            fun done(copy: Boolean) {
+                if (copy) XuiCenter.copy(d.value)
+                XuiCenter.close(d)
+                d.done.complete(Unit)
+            }
+            AlertDialog(
+                onDismissRequest = { done(false) },
+                title = { Text(d.title) },
+                text = {
+                    SelectionContainer {
+                        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(d.text)
+                            Text(d.value, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { done(true) }) { Text("Копировать и закрыть") } },
+                dismissButton = { TextButton(onClick = { done(false) }) { Text("Закрыть") } },
             )
         }
     }
@@ -267,7 +334,9 @@ fun PickSheet(req: PickRequest) {
     fun finish(v: String?) { req.done.complete(v) }
     FullDialog(onDismiss = { finish(null) }) {
         DialogHeader(req.title) { finish(null) }
-        Text(req.text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+        SelectionContainer {
+            Text(req.text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+        }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(8.dp)) {
             items(req.items) { it ->
                 Row(
@@ -280,7 +349,7 @@ fun PickSheet(req: PickRequest) {
             }
         }
         OutlinedTextField(
-            custom, { custom = it }, singleLine = true, label = { Text("Или своя версия") },
+            custom, { custom = it }, singleLine = true, label = { Text(if (req.field == "Версия") "Или своя версия" else req.field) },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         )
         Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
@@ -407,30 +476,39 @@ fun PanelsSheet(onClose: () -> Unit) {
 }
 
 @Composable
-private fun ColumnScope.PanelEditor(orig: XuiPanel, isNew: Boolean, onDone: () -> Unit) {
+private fun ColumnScope.PanelEditor(orig0: XuiPanel, isNew: Boolean, onDone: () -> Unit) {
+    // после выпуска токена / смены пароля — запись перечитывается из хранилища (как reload мака)
+    var orig by remember(orig0) { mutableStateOf(orig0) }
+    var saved by remember(orig0) { mutableStateOf(!isNew) }
     var name by remember(orig) { mutableStateOf(orig.name) }
     var role by remember(orig) { mutableStateOf(orig.role) }
     var url by remember(orig) { mutableStateOf(orig.url) }
     var login by remember(orig) { mutableStateOf(orig.login) }
     var secret by remember(orig) { mutableStateOf("") }
+    var pass by remember(orig) { mutableStateOf("") }
+    var twoFa by remember(orig) { mutableStateOf("") }
     var verify by remember(orig) { mutableStateOf(orig.verifyTls) }
     var ssh by remember(orig) { mutableStateOf(orig.ssh ?: "") }
-    var result by remember(orig) {
+    var result by remember(orig0) {
         mutableStateOf(
             if (isNew) "Новая панель" else if (orig.token.isEmpty()) "Не задано" else if (orig.isAwg) "Пароль сохранён" else "Токен сохранён",
         )
     }
     val sessions = remember { XuiStore.sessions() }
 
-    fun fromForm(): XuiPanel? {
+    fun fromForm(requireToken: Boolean = true): XuiPanel? {
         if (PanelURL.tryParse(url) == null) { result = "✗ не разобрал адрес"; return null }
         val token = secret.trim().ifEmpty { orig.token }
-        if (token.isEmpty()) { result = if (role.startsWith("awg")) "✗ Нужен пароль" else "✗ Нужен API-токен"; return null }
+        if (token.isEmpty() && requireToken) {
+            result = if (role.startsWith("awg")) "✗ Нужен пароль" else "✗ Нужен API-токен — или логин и пароль → «Выпустить токен по паролю»"
+            return null
+        }
         if (role == "awg" && login.isBlank()) { result = "✗ Нужен логин"; return null }
         return orig.copy(
             name = name.trim().ifEmpty { (PanelURL.tryParse(url)?.host ?: "").substringBefore('.').uppercase() },
             role = role,
-            login = if (role == "awg") login.trim() else if (role == "awg1") "" else orig.login,
+            login = if (role == "awg1") "" else login.trim(),
+            pass = if (role == "master" || role == "node") pass.ifEmpty { orig.pass } else null,
             url = url.trim(),
             token = token,
             verifyTls = verify,
@@ -438,7 +516,103 @@ private fun ColumnScope.PanelEditor(orig: XuiPanel, isNew: Boolean, onDone: () -
         )
     }
 
-    DialogHeader(if (isNew) "Новая панель" else orig.name, onDone)
+    /** Перечитать запись из хранилища (форма — из сохранённого). */
+    fun reload(id: String) {
+        XuiStore.panel(id)?.let { orig = it; saved = true }
+    }
+
+    fun issue() {
+        val p = fromForm(requireToken = false) ?: return
+        val pw = p.pass
+        if (p.login.isEmpty() || pw.isNullOrEmpty()) { result = "✗ Нужны логин и пароль админа"; return }
+        result = "вхожу в панель…"
+        val code = twoFa.trim()
+        XuiCenter.launch {
+            result = try {
+                val tname = "qterm-${XuiLogin.stamp("yyMMdd-HHmmss")}"
+                val r = XuiLogin.issueToken(p.url, p.login, pw, code.ifEmpty { null }, p.verifyTls, tname)
+                val t = r.token
+                if (t.isNullOrEmpty()) {
+                    "✗ ${r.message}"
+                } else {
+                    val np = p.copy(token = t)
+                    XuiStore.save(np)
+                    reload(np.id)
+                    // какие токены на панели и когда созданы: свежий install = база создана заново
+                    val summary = runCatching { XuiApi.forPanel(np).tokenSummary() }.getOrDefault("—")
+                    "✓ токен «$tname» выпущен и сохранён вместе с паролем\nТокены на панели: $summary"
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "✗ ${e.message}"
+            }
+        }
+    }
+
+    /** Сменить логин/пароль админа на самой панели и сохранить новый в QTerm. */
+    fun changeCreds() {
+        val p0 = orig
+        if (p0.isAwgLegacy) {
+            result = "Старая amnezia-wg-easy: пароль задаётся на сервере (PASSWORD_HASH контейнера) — через её API не сменить"
+            return
+        }
+        XuiCenter.launch {
+            var p = p0
+            val savedOld = if (p.isXui) (p.pass ?: "") else p.token
+            val askLogin = p.login.isEmpty()
+            val fields = mutableListOf<XField>()
+            if (askLogin) fields.add(XField("Текущий логин"))
+            if (savedOld.isEmpty()) fields.add(XField("Текущий пароль", secure = true))
+            if (p.isXui) fields.add(XField("Новый логин", p.login))
+            fields.add(XField("Новый пароль (пусто — сгенерирую)", secure = true))
+            fields.add(XField("Новый пароль ещё раз", secure = true))
+            if (p.isXui) fields.add(XField("Код 2FA, если включена"))
+            val v = XuiCenter.form(
+                if (p.isXui) "Логин и пароль админа 3x-ui «${p.name}». API-токены продолжают работать."
+                else "Пароль админа awg-panel «${p.name}» (логин ${p.login} не меняется, от 12 символов).",
+                "Сменить логин/пароль", fields, ok = "Сменить",
+            ) ?: return@launch
+            var i = 0
+            fun next(): String = v[i++].trim()
+            val curLogin = if (askLogin) next() else p.login
+            val old = if (savedOld.isEmpty()) v[i++] else savedOld
+            val newLogin = if (p.isXui) next() else p.login
+            var newPass = v[i++]
+            val again = v[i++]
+            val code = if (p.isXui) next() else ""
+            var generated = false
+            if (newPass.isEmpty() && again.isEmpty()) { newPass = xuiRandomPassword(); generated = true }
+            if (newPass != again && !generated) { result = "✗ пароли не совпадают"; return@launch }
+            if (p.isAwg && newPass.length < 12) { result = "✗ awg-panel: пароль от 12 символов"; return@launch }
+            if (curLogin.isEmpty() || old.isEmpty() || newLogin.isEmpty()) { result = "✗ нужны текущие логин и пароль"; return@launch }
+            result = "меняю на панели…"
+            try {
+                if (p.isXui) {
+                    XuiApi.forPanel(p).updateUser(curLogin, old, newLogin, newPass, code.ifEmpty { null })
+                    p = p.copy(login = newLogin, pass = newPass)
+                } else {
+                    AwgPanelApi(p.name, p.url, curLogin, old, p.verifyTls).changePassword(old, newPass)
+                    p = p.copy(login = curLogin, token = newPass)
+                }
+                XuiStore.save(p)
+                reload(p.id)
+                result = "✓ сменено на панели и сохранено в QTerm"
+                if (generated) {
+                    XuiCenter.secret(
+                        "Новый пароль админа «${p.name}» — уже сохранён в QTerm. Скопируй в менеджер паролей.",
+                        "Новый пароль", newPass,
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                result = "✗ ${e.message}"
+            }
+        }
+    }
+
+    DialogHeader(if (!saved) "Новая панель" else orig.name, onDone)
     Column(
         Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -456,7 +630,7 @@ private fun ColumnScope.PanelEditor(orig: XuiPanel, isNew: Boolean, onDone: () -
         }
         OutlinedTextField(url, { url = it }, label = { Text("Адрес панели — как в браузере") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         if (role == "awg") {
-            OutlinedTextField(login, { login = it }, label = { Text("Логин админа awg-panel (2FA выключена)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(login, { login = it }, label = { Text("Логин админа awg-panel (2FA должна быть выключена)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         }
         OutlinedTextField(
             secret, { secret = it }, singleLine = true, visualTransformation = PasswordVisualTransformation(),
@@ -472,6 +646,23 @@ private fun ColumnScope.PanelEditor(orig: XuiPanel, isNew: Boolean, onDone: () -
             supportingText = { Text("Пусто — оставить сохранённый") },
             modifier = Modifier.fillMaxWidth(),
         )
+        if (role == "master" || role == "node") {
+            Text(
+                "Логин и пароль админа — чтобы выпустить токен здесь и чтобы QTerm сам перевыпускал его, если панель перестанет его принимать.",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(login, { login = it }, label = { Text("Логин админа 3x-ui") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                pass, { pass = it }, singleLine = true, visualTransformation = PasswordVisualTransformation(),
+                label = { Text(if (!orig.pass.isNullOrEmpty()) "Пароль админа (сохранён; пусто — оставить)" else "Пароль админа") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                twoFa, { twoFa = it }, singleLine = true, label = { Text("Код 2FA, если включена") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedButton(onClick = { issue() }) { Text("Выпустить токен по паролю") }
+        }
         SwitchRow("Проверять сертификат", verify) { verify = it }
         if (role == "master" || role == "node") {
             var sshOpen by remember { mutableStateOf(false) }
@@ -495,10 +686,17 @@ private fun ColumnScope.PanelEditor(orig: XuiPanel, isNew: Boolean, onDone: () -
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        if (saved) {
+            OutlinedButton(onClick = { changeCreds() }) { Text("Сменить логин/пароль…") }
+            Text(
+                "Пароль админа панели (3x-ui — и логин) прямо на панели; новый сохраняется в QTerm.",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         SelectionContainer { Text(result, style = MaterialTheme.typography.bodySmall) }
     }
     Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (!isNew) {
+        if (saved) {
             TextButton(onClick = {
                 XuiCenter.launch {
                     if (XuiCenter.confirm("Удалить «${orig.name}» из QTerm? На самой панели ничего не меняется.", "Панели", "Удалить")) {

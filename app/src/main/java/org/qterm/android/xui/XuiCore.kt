@@ -20,7 +20,21 @@ import java.util.UUID
 // Записи живут в vault.secrets под ключами "xui.panel:<UUID>" и "xui.names" — тот же JSON,
 // что пишут винда и мак; синк по LWW (updatedAt внутри записи) — см. XuiStore.remoteNewer.
 
-class XuiError(message: String) : Exception(message)
+/** status — HTTP-код, если ошибка из-за него (401 — панель не принимает токен). */
+class XuiError(message: String, val status: Int = 0) : Exception(message)
+
+/** Строка таблицы для буфера: ячейки через табуляцию (вставляется в таблицу как есть). Как XuiCopy.row мака. */
+fun xuiCopyRow(cells: List<String>): String =
+    cells.joinToString("\t") { it.replace("\t", " ").replace("\n", " ") }
+
+/** Алфавит паролей без похожих символов (0/O, 1/l/I). */
+const val XUI_PASSWORD_CHARS = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+/** Случайный пароль без похожих символов (как XuiDialog.randomPassword мака). */
+fun xuiRandomPassword(n: Int = 20): String {
+    val g = java.security.SecureRandom()
+    return String(CharArray(n) { XUI_PASSWORD_CHARS[g.nextInt(XUI_PASSWORD_CHARS.length)] })
+}
 
 enum class LogKind { INFO, OK, WARN, ERR, HEAD, DIM }
 
@@ -163,6 +177,11 @@ data class XInbound(
     val nodeId: Int? = null,
     val enable: Boolean = true,
     val clientEmails: List<String> = emptyList(),
+    /**
+     * Что привязывает инбаунд к своему серверу: TLS-SNI и пути сертификатов, Reality с локальным сайтом (127.0.0.1)
+     * и его SNI. Такой инбаунд на другом сервере не заработает. Reality на чужой донор переносится свободно.
+     */
+    val hostBound: List<String> = emptyList(),
 ) {
     val multiUser: Boolean get() = proto in setOf("vless", "vmess", "trojan", "shadowsocks", "hysteria", "tuic")
     val isHys: Boolean get() = proto == "hysteria"

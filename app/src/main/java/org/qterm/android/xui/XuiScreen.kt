@@ -145,10 +145,12 @@ fun XuiScreen(onBack: () -> Unit) {
                 }
             }
             if (m.status.isNotEmpty() && m.seg != XuiModel.Seg.AWG && m.seg != XuiModel.Seg.UPDATES) {
-                Text(
-                    m.status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
+                SelectionContainer {
+                    Text(
+                        m.status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
             }
             Box(Modifier.weight(1f)) {
                 when (m.seg) {
@@ -310,19 +312,28 @@ private fun SetupCard(m: XuiModel) {
                 Button(onClick = { XuiCenter.launch { m.setupSave() } }) { Text("Проверить и сохранить") }
                 OutlinedButton(onClick = { m.nodeAdd = XuiCenter.clipboardText() }) { Text("По паролю…") }
             }
-            if (m.setupResult.isNotEmpty()) Text(m.setupResult, style = MaterialTheme.typography.bodySmall)
+            if (m.setupResult.isNotEmpty()) SelectionContainer { Text(m.setupResult, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }
 
 // ------------------------------------------------------------------------- монитор
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MonitorTab(m: XuiModel) {
     val rows = m.monRows
+    var menuFor by remember { mutableStateOf<MonRow?>(null) }
     LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (rows.isNotEmpty()) {
+            item {
+                Row {
+                    SmallBtn("Копировать все") { XuiCenter.copy(rows.joinToString("\n") { monText(it) }) }
+                }
+            }
+        }
         items(rows, key = { it.id }) { r ->
-            Card(shape = RoundedCornerShape(12.dp)) {
+            Card(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth().clickable { menuFor = r }) {
                 Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Dot(r.statusColor)
@@ -343,9 +354,49 @@ private fun MonitorTab(m: XuiModel) {
                 }
             }
         }
-        if (rows.isEmpty()) item { Text(m.status.ifEmpty { "Нет данных" }, Modifier.padding(8.dp)) }
+        if (rows.isEmpty()) item { SelectionContainer { Text(m.status.ifEmpty { "Нет данных" }, Modifier.padding(8.dp)) } }
+    }
+    menuFor?.let { r ->
+        ModalBottomSheet(onDismissRequest = { menuFor = null }) {
+            Column(Modifier.navigationBarsPadding()) {
+                ListItem(
+                    headlineContent = { Text(r.name, fontWeight = FontWeight.Bold) },
+                    supportingContent = { SelectionContainer { Text(monText(r).replace("\t", " · ")) } },
+                )
+                HorizontalDivider()
+                SheetItem("Копировать") { menuFor = null; XuiCenter.copy(monText(r)) }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
     }
 }
+
+private fun pct(v: Double?): String = if (v == null) "—" else String.format(java.util.Locale.ROOT, "%.0f%%", v)
+
+private fun monText(r: MonRow): String =
+    xuiCopyRow(listOf(r.name, r.status, r.ping, pct(r.cpu), pct(r.ram), r.uptime, r.xray, r.clients, r.net, r.error))
+
+private fun clientText(r: ClientRow): String =
+    xuiCopyRow(listOf(r.email, if (r.src.enable) "да" else "нет") + r.cells.map { it.first } + listOf(r.traffic, r.expiry, r.src.subId))
+
+private fun nodeText(r: NodeRow): String =
+    xuiCopyRow(
+        listOf(
+            r.name, r.address, r.status, if (r.src.enable) "да" else "нет", "${r.src.inboundCount}",
+            "${r.src.clientCount}", r.src.panelVersion, r.src.lastError,
+        ),
+    )
+
+private fun awgText(r: AwgRow): String =
+    xuiCopyRow(listOf(r.src.panel, r.src.name, r.iface, r.src.address, if (r.src.enabled) "да" else "нет", r.handshake, r.traffic))
+
+private fun updText(r: UpdRow): String =
+    xuiCopyRow(listOf(r.p.name, r.p.roleText, r.info.version, r.info.latest, r.info.xray, r.info.ssh, r.lastBackup, r.info.state))
+
+private fun bakText(b: XuiBackup): String =
+    xuiCopyRow(listOf(XuiModel.fmt(b.time, bakDate), b.panel, b.version, XuiModel.bytes(b.size.toDouble()), b.path))
+
+private val bakDate: java.time.format.DateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss")
 
 // ------------------------------------------------------------------------- клиенты
 
@@ -377,6 +428,9 @@ private fun ClientsTab(m: XuiModel) {
             val sel = m.selectedClients()
             BtnRow {
                 Text("Выбрано ${sel.size}", Modifier.padding(top = 6.dp))
+                SmallBtn("Копировать") {
+                    XuiCenter.copy(rows.filter { it.email in m.clientSel }.joinToString("\n") { clientText(it) })
+                }
                 SmallBtn("Синхронизировать…") { XuiCenter.launch { m.clientSync(sel) } }
                 SmallBtn("Привязать…") { bindFor = sel to true }
                 SmallBtn("Отвязать…") { bindFor = sel to false }
@@ -439,9 +493,13 @@ private fun ClientsTab(m: XuiModel) {
             Column(Modifier.navigationBarsPadding().verticalScroll(rememberScrollState())) {
                 ListItem(
                     headlineContent = { Text(c.email, fontWeight = FontWeight.Bold) },
-                    supportingContent = { Text("ID подписки: ${c.subId.ifEmpty { "—" }}") },
+                    supportingContent = { SelectionContainer { Text("ID подписки: ${c.subId.ifEmpty { "—" }}") } },
                 )
                 HorizontalDivider()
+                SheetItem("Копировать строку") {
+                    menuFor = null
+                    rows.firstOrNull { it.email == c.email }?.let { XuiCenter.copy(clientText(it)) }
+                }
                 SheetItem("Скопировать ссылку подписки") { menuFor = null; m.copyLink(c) }
                 if (m.linkOf(c, clash = true) != null) SheetItem("Скопировать ссылку Clash / Mihomo") { menuFor = null; m.copyLink(c, true) }
                 SheetItem("QR-код") { menuFor = null; m.showQR(c) }
@@ -506,9 +564,10 @@ private fun NodesTab(m: XuiModel) {
     Column {
         BtnRow {
             SmallBtn("＋ Подключить ноду…") { XuiCenter.launch { m.nodeConnect() } }
+            if (rows.isNotEmpty()) SmallBtn("Копировать все") { XuiCenter.copy(rows.joinToString("\n") { nodeText(it) }) }
         }
         Text(
-            "Подключение: бэкапы → чистка дублей на ноде → регистрация на главной (токен node-sync) → единые имена → привязка. Нажми на узел — ревизия, выравнивание клиентов, токен.",
+            "Подключение: бэкапы → чистка дублей на ноде → регистрация на главной (токен node-sync) → единые имена → привязка. Нажми на узел — ревизия, выравнивание клиентов, токен, «Убрать с главной…» (инбаунды на самой ноде остаются).",
             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 12.dp),
         )
@@ -538,13 +597,19 @@ private fun NodesTab(m: XuiModel) {
     menuFor?.let { r ->
         ModalBottomSheet(onDismissRequest = { menuFor = null }) {
             Column(Modifier.navigationBarsPadding()) {
-                ListItem(headlineContent = { Text(r.name, fontWeight = FontWeight.Bold) }, supportingContent = { Text(r.address) })
+                ListItem(
+                    headlineContent = { Text(r.name, fontWeight = FontWeight.Bold) },
+                    supportingContent = { SelectionContainer { Text(r.address) } },
+                )
                 HorizontalDivider()
+                SheetItem("Копировать") { menuFor = null; XuiCenter.copy(nodeText(r)) }
                 SheetItem("Ревизия ноды") { menuFor = null; XuiCenter.launch { m.nodeRevise(r) } }
                 SheetItem("Выровнять клиентов…") { menuFor = null; XuiCenter.launch { m.nodeSync(r) } }
                 SheetItem(if (r.src.enable) "Выключить узел" else "Включить узел") { menuFor = null; XuiCenter.launch { m.nodeToggle(r) } }
                 SheetItem("Проверить связь") { menuFor = null; XuiCenter.launch { m.nodeProbe(r) } }
                 SheetItem("Токен ноды…") { menuFor = null; XuiCenter.launch { m.nodeToken(r) } }
+                HorizontalDivider()
+                SheetItem("Убрать с главной…", MaterialTheme.colorScheme.error) { menuFor = null; XuiCenter.launch { m.nodeRemove(r) } }
                 Spacer(Modifier.height(16.dp))
             }
         }
@@ -624,6 +689,7 @@ private fun AwgTab(m: XuiModel, saveFile: (String, ByteArray) -> Unit, saveToFol
             val sel = m.awgSelected()
             BtnRow {
                 Text("Выбрано ${sel.size}", Modifier.padding(top = 6.dp))
+                SmallBtn("Копировать") { XuiCenter.copy(rows.filter { it.src.id in m.awgSel }.joinToString("\n") { awgText(it) }) }
                 SmallBtn("Сохранить .conf в папку…") { saveToFolder(sel) }
                 SmallBtn("Вкл / выкл") { XuiCenter.launch { m.awgToggle(sel) } }
                 SmallBtn("Удалить") { XuiCenter.launch { m.awgDelete(sel) } }
@@ -631,10 +697,12 @@ private fun AwgTab(m: XuiModel, saveFile: (String, ByteArray) -> Unit, saveToFol
             }
         }
         if (m.awgStatus.isNotEmpty()) {
-            Text(
-                m.awgStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp), maxLines = 3,
-            )
+            SelectionContainer {
+                Text(
+                    m.awgStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp), maxLines = 3,
+                )
+            }
         }
         LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(rows, key = { it.src.id }) { r ->
@@ -677,8 +745,15 @@ private fun AwgTab(m: XuiModel, saveFile: (String, ByteArray) -> Unit, saveToFol
     menuFor?.let { c ->
         ModalBottomSheet(onDismissRequest = { menuFor = null }) {
             Column(Modifier.navigationBarsPadding()) {
-                ListItem(headlineContent = { Text(c.name, fontWeight = FontWeight.Bold) }, supportingContent = { Text("${c.panel} · ${c.address}") })
+                ListItem(
+                    headlineContent = { Text(c.name, fontWeight = FontWeight.Bold) },
+                    supportingContent = { SelectionContainer { Text("${c.panel} · ${c.address}") } },
+                )
                 HorizontalDivider()
+                SheetItem("Копировать строку") {
+                    menuFor = null
+                    rows.firstOrNull { it.src.id == c.id }?.let { XuiCenter.copy(awgText(it)) }
+                }
                 SheetItem("QR-код") { menuFor = null; XuiCenter.launch { m.awgQR(c) } }
                 SheetItem("Конфиг → буфер") { menuFor = null; XuiCenter.launch { m.awgCopy(c) } }
                 SheetItem("Отправить конфиг…") { menuFor = null; XuiCenter.launch { m.awgShare(c) } }
@@ -713,12 +788,17 @@ private fun UpdatesTab(m: XuiModel, saveFile: (String, ByteArray) -> Unit) {
                 SmallBtn("Geo-файлы", !m.updBusy) { XuiCenter.launch { m.updateGeo() } }
                 SmallBtn("Бэкап сейчас", !m.updBusy) { XuiCenter.launch { m.backupNow() } }
                 SmallBtn("Версия через терминал…", !m.updBusy) { XuiCenter.launch { m.installViaTerminalPick() } }
+                SmallBtn(if (m.updSel.isEmpty()) "Копировать все" else "Копировать отмеченные") {
+                    XuiCenter.copy(rows.filter { m.updSel.isEmpty() || it.p.id in m.updSel }.joinToString("\n") { updText(it) })
+                }
             }
-            Text(
-                m.updStatus.ifEmpty { "Отметь панели галкой. «Обновить» без отметок — все, где есть новая версия (ноды первыми, главная последней, стоп на первой ошибке)." },
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
+            SelectionContainer {
+                Text(
+                    m.updStatus.ifEmpty { "Отметь панели галкой. «Обновить» без отметок — все, где есть новая версия (ноды первыми, главная последней, стоп на первой ошибке)." },
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
         }
         items(rows, key = { it.p.id }) { r ->
             val checked = r.p.id in m.updSel
@@ -748,7 +828,9 @@ private fun UpdatesTab(m: XuiModel, saveFile: (String, ByteArray) -> Unit) {
                             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         if (r.info.state.isNotEmpty()) {
-                            Text(r.info.state, style = MaterialTheme.typography.bodySmall, color = if (r.info.error) RED else MaterialTheme.colorScheme.onSurfaceVariant)
+                            SelectionContainer {
+                                Text(r.info.state, style = MaterialTheme.typography.bodySmall, color = if (r.info.error) RED else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
@@ -775,8 +857,13 @@ private fun UpdatesTab(m: XuiModel, saveFile: (String, ByteArray) -> Unit) {
     bakMenu?.let { b ->
         ModalBottomSheet(onDismissRequest = { bakMenu = null }) {
             Column(Modifier.navigationBarsPadding()) {
-                ListItem(headlineContent = { Text(b.fileName, fontWeight = FontWeight.Bold) }, supportingContent = { Text(XuiModel.fmt(b.time)) })
+                ListItem(
+                    headlineContent = { SelectionContainer { Text(b.fileName, fontWeight = FontWeight.Bold) } },
+                    supportingContent = { Text(XuiModel.fmt(b.time)) },
+                )
                 HorizontalDivider()
+                SheetItem("Копировать") { bakMenu = null; XuiCenter.copy(bakText(b)) }
+                SheetItem("Копировать путь к файлу") { bakMenu = null; XuiCenter.copy(b.path) }
                 SheetItem("Восстановить базу…") { bakMenu = null; XuiCenter.launch { m.restoreBackup() } }
                 SheetItem("Откатить панель к этому бэкапу…") { bakMenu = null; XuiCenter.launch { m.rollbackToBackup() } }
                 SheetItem("Сохранить файл…") {

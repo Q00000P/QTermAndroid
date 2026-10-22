@@ -124,4 +124,55 @@ class XuiLogicTest {
         assertEquals("S26-HYS", xuiEscape("S26-HYS"))
         assertEquals("a%20b%40c", xuiEscape("a b@c"))
     }
+
+    @Test fun hostBound() {
+        // TLS: SNI и пути сертификатов; streamSettings строкой JSON (как отдаёт /inbounds/list)
+        val tls = kotlinx.serialization.json.JsonPrimitive(
+            """{"security":"tls","tlsSettings":{"serverName":"a.example.com","certificates":[{"certificateFile":"/root/cert/a/fullchain.pem"}]}}""",
+        )
+        assertEquals(listOf("SNI a.example.com", "серт /root/cert/a/fullchain.pem"), XuiApi.hostBound(tls))
+        // Reality на локальный сайт — привязан к серверу вместе со своими serverNames
+        val local = J.parse("""{"realitySettings":{"target":"127.0.0.1:8443","serverNames":["b.example.com",""]}}""")
+        assertEquals(listOf("Reality → 127.0.0.1:8443", "SNI b.example.com"), XuiApi.hostBound(local))
+        // старое поле dest, unix-сокет, голый порт
+        assertEquals("Reality → /dev/shm/nginx.sock", XuiApi.hostBound(J.parse("""{"realitySettings":{"dest":"/dev/shm/nginx.sock"}}"""))[0])
+        assertEquals("Reality → 8443", XuiApi.hostBound(J.parse("""{"realitySettings":{"target":"8443"}}"""))[0])
+        // Reality на чужой донор переносится свободно
+        assertTrue(XuiApi.hostBound(J.parse("""{"realitySettings":{"target":"www.microsoft.com:443","serverNames":["www.microsoft.com"]}}""")).isEmpty())
+        assertTrue(XuiApi.hostBound(null).isEmpty())
+        assertTrue(XuiApi.hostBound(kotlinx.serialization.json.JsonPrimitive("")).isEmpty())
+    }
+
+    @Test fun randomPassword() {
+        val p = xuiRandomPassword()
+        assertEquals(20, p.length)
+        assertTrue(p.all { it in XUI_PASSWORD_CHARS })
+        assertEquals(12, xuiRandomPassword(12).length)
+        // без похожих символов
+        assertTrue("0O1lI".none { it in XUI_PASSWORD_CHARS })
+        assertFalse(xuiRandomPassword(64) == xuiRandomPassword(64))
+    }
+
+    @Test fun tokenSummary() {
+        val arr = J.parse(
+            """[{"id":1,"name":"install","scope":"admin","createdAt":1759490400},
+               {"id":2,"name":"qterm-master-1","scope":"node-sync","createdAt":1759490400000,"enabled":false},
+               {"id":3,"name":"x","scope":"admin"}]""",
+        ) as kotlinx.serialization.json.JsonArray
+        assertEquals(
+            "install · 03.10.2025 11:20 · admin; qterm-master-1 · 03.10.2025 11:20 · node-sync · выкл; x · ? · admin",
+            XuiApi.tokenSummaryOf(arr, java.time.ZoneOffset.UTC),
+        )
+        assertEquals("", XuiApi.tokenSummaryOf(kotlinx.serialization.json.JsonArray(emptyList())))
+    }
+
+    @Test fun copyRow() {
+        assertEquals("a\tb c\td e", xuiCopyRow(listOf("a", "b\tc", "d\ne")))
+    }
+
+    @Test fun xuiErrorStatus() {
+        assertEquals(401, XuiApi.unauthorized("MSK").status)
+        assertTrue(XuiApi.unauthorized("MSK").message!!.startsWith("MSK: панель не принимает токен (401)"))
+        assertEquals(0, XuiError("x").status)
+    }
 }

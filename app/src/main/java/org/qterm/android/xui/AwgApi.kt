@@ -86,6 +86,11 @@ class AwgPanelApi(
         return data
     }
 
+    /** Пароль админа awg-panel (логин не меняется; от 12 символов). */
+    suspend fun changePassword(current: String, new: String) {
+        send("POST", "/me/password", J.body("currentPassword" to current, "newPassword" to new, "confirmPassword" to new))
+    }
+
     override suspend fun interfaces(): List<AwgInterface> =
         ((J.parse(send("GET", "/interfaces")) as? JsonArray) ?: JsonArray(emptyList())).mapNotNull { it as? JsonObject }.map {
             AwgInterface(J.str(it, "name"), J.int(it, "port"), J.bool(it, "enabled", true), J.bool(it, "isAwg31"))
