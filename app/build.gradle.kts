@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Base64
 
 plugins {
     id("com.android.application")
@@ -6,7 +7,45 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-val gdriveClientId = (project.findProperty("qterm.gdriveClientId") as String?)?.trim().orEmpty()
+// Локальные настройки — в ~/.gradle/gradle.properties (в гит не попадают), в CI — переменные окружения.
+fun prop(name: String): String? = (project.findProperty(name) as String?)?.trim()?.takeIf { it.isNotEmpty() }
+fun env(name: String): String? = System.getenv(name)?.trim()?.takeIf { it.isNotEmpty() }
+
+// Google OAuth: Android-клиент привязан к SHA-1 подписи → у debug и release разные client id
+// (README-GDRIVE.md). Release берёт qterm.gdriveClientIdRelease, без него — общий qterm.gdriveClientId.
+val gdriveClientId = prop("qterm.gdriveClientId").orEmpty()
+val gdriveClientIdRelease = prop("qterm.gdriveClientIdRelease") ?: gdriveClientId
+fun redirectScheme(id: String) =
+    if (id.isNotEmpty()) "com.googleusercontent.apps." + id.removeSuffix(".apps.googleusercontent.com")
+    else "org.qterm.oauth.unused"
+
+// Токен обновлений (GitHub, только чтение Q00000P/QTerm-releases): вшивается в BuildConfig.UPDATE_TOKEN.
+// Пустой — проверка обновлений в приложении отключена с понятным сообщением.
+val updateToken = (prop("qterm.updateToken") ?: env("QTERM_UPDATE_TOKEN")).orEmpty()
+    .filter { it.isLetterOrDigit() || it == '_' }
+
+// Release-подпись: ~/.gradle/gradle.properties (qterm.release.*) или CI-переменные (QTERM_KEYSTORE_B64 …).
+// Нет ни того ни другого — release собирается неподписанным (app-release-unsigned.apk), debug не затрагивается.
+data class ReleaseKey(val store: File, val storePassword: String, val alias: String, val keyPassword: String)
+val releaseKey: ReleaseKey? = run {
+    val fromProps = prop("qterm.release.storeFile")?.let { path ->
+        val f = file(path.replaceFirst(Regex("^~(?=/|$)"), System.getProperty("user.home")))
+        val sp = prop("qterm.release.storePassword")
+        if (f.isFile && sp != null) {
+            ReleaseKey(f, sp, prop("qterm.release.keyAlias") ?: "qterm", prop("qterm.release.keyPassword") ?: sp)
+        } else {
+            logger.warn("qterm.release.storeFile=$path: файла нет или не задан qterm.release.storePassword — release будет неподписанным")
+            null
+        }
+    }
+    fromProps ?: env("QTERM_KEYSTORE_B64")?.let { b64 ->
+        val sp = env("QTERM_KEYSTORE_PASSWORD") ?: return@let null
+        val f = layout.buildDirectory.file("qterm-release.jks").get().asFile
+        f.parentFile.mkdirs()
+        f.writeBytes(Base64.getMimeDecoder().decode(b64))
+        ReleaseKey(f, sp, env("QTERM_KEY_ALIAS") ?: "qterm", env("QTERM_KEY_PASSWORD") ?: sp)
+    }
+}
 
 android {
     namespace = "org.qterm.android"
@@ -19,18 +58,30 @@ android {
         versionCode = 311
         versionName = "3.11.0"
 
-        // OAuth Google: client id из gradle.properties (qterm.gdriveClientId=…)
-        buildConfigField("String", "GDRIVE_CLIENT_ID", "\"$gdriveClientId\"")
-        manifestPlaceholders["appAuthRedirectScheme"] =
-            if (gdriveClientId.isNotEmpty()) {
-                "com.googleusercontent.apps." + gdriveClientId.removeSuffix(".apps.googleusercontent.com")
-            } else {
-                "org.qterm.oauth.unused"
+        buildConfigField("String", "UPDATE_TOKEN", "\"$updateToken\"")
+    }
+
+    signingConfigs {
+        if (releaseKey != null) {
+            create("release") {
+                storeFile = releaseKey.store
+                storePassword = releaseKey.storePassword
+                keyAlias = releaseKey.alias
+                keyPassword = releaseKey.keyPassword
             }
+        }
     }
 
     buildTypes {
+        // OAuth Google: client id из gradle.properties (qterm.gdriveClientId / qterm.gdriveClientIdRelease)
+        getByName("debug") {
+            buildConfigField("String", "GDRIVE_CLIENT_ID", "\"$gdriveClientId\"")
+            manifestPlaceholders["appAuthRedirectScheme"] = redirectScheme(gdriveClientId)
+        }
         release {
+            buildConfigField("String", "GDRIVE_CLIENT_ID", "\"$gdriveClientIdRelease\"")
+            manifestPlaceholders["appAuthRedirectScheme"] = redirectScheme(gdriveClientIdRelease)
+            if (releaseKey != null) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }

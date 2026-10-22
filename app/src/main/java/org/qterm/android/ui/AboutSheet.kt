@@ -18,6 +18,9 @@ import androidx.compose.ui.unit.dp
 import org.qterm.android.BuildConfig
 import org.qterm.android.ssh.TermRegistry
 import org.qterm.android.sync.SyncEngine
+import org.qterm.android.update.UpdateCenter
+import org.qterm.android.update.UpdateLogDialog
+import org.qterm.android.update.UpdateLogic
 import org.qterm.android.vault.VaultRepo
 
 /** О приложении: версия, что настроено, куда смотреть при проблемах. */
@@ -42,6 +45,10 @@ fun AboutSheet(onDismiss: () -> Unit) {
         else -> "не настроен"
     }
     val autoSync = if (v?.syncConfig?.enabled == true) "включён" else "выключен"
+
+    var autoCheck by remember { mutableStateOf(UpdateCenter.autoCheck) }
+    var showLog by remember { mutableStateOf(false) }
+    val tokenWarning by UpdateCenter.tokenWarning.collectAsState()
 
     fun open(url: String) {
         runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
@@ -110,10 +117,51 @@ fun AboutSheet(onDismiss: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(12.dp))
+
+            // Обновления — как на маке и винде: приватный репо релизов, токен только на чтение вшит в сборку
+            Text("Обновления", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (UpdateCenter.hasToken) {
+                    "Релизы ${UpdateLogic.REPO} (приватный), токен только на чтение вшит в сборку; " +
+                        "APK сверяется по sha256 и подписи перед установкой."
+                } else {
+                    "В этой сборке нет токена обновлений (QTERM_UPDATE_TOKEN) — проверка отключена. " +
+                        "Собери через make-release-android.sh или ставь APK вручную."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            tokenWarning?.let {
+                Text("⚠ $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Проверять на старте и раз в сутки",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(
+                    checked = autoCheck,
+                    enabled = UpdateCenter.hasToken,
+                    onCheckedChange = { autoCheck = it; UpdateCenter.autoCheck = it },
+                )
+            }
+            Row {
+                TextButton(onClick = { UpdateCenter.checkNow() }) { Text("Проверить обновления…") }
+                TextButton(onClick = { showLog = true }) { Text("Журнал обновлений") }
+            }
+
+            Spacer(Modifier.height(8.dp))
             Row {
                 TextButton(onClick = { open("https://github.com/Q00000P/QTermAndroid") }) { Text("Исходники") }
-                TextButton(onClick = { open("https://github.com/Q00000P/QTermAndroid/releases") }) { Text("Релизы") }
+                TextButton(onClick = { open(UpdateLogic.RELEASES_PAGE) }) { Text("Релизы") }
                 TextButton(onClick = {
                     val info = "QTerm ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\n" +
                         "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})\n" +
@@ -130,6 +178,7 @@ fun AboutSheet(onDismiss: () -> Unit) {
             Spacer(Modifier.height(24.dp))
         }
     }
+    if (showLog) UpdateLogDialog(onDismiss = { showLog = false })
 }
 
 @Composable
