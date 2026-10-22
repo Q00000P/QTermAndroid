@@ -286,6 +286,59 @@ object VaultRepo {
         if (i >= 0) v.gitCommands[i] = v.gitCommands[i].copy(deleted = true, updatedAt = nowIso())
     }
 
+    // ------------------------------------------------------- ключи SSH
+
+    /**
+     * Текст ключа (уже OpenSSH, PPK сконвертирован) → в вейлт. Одинаковый ключ второй раз не
+     * заводится: возвращается существующий (second == false). Уходит синком.
+     */
+    fun addKey(name: String, text: String): Pair<SSHKey, Boolean> {
+        var result: Pair<SSHKey, Boolean>? = null
+        synchronized(this) { if (data == null) data = VaultData() }
+        mutate { v ->
+            val existing = org.qterm.android.keys.KeyImport.findDuplicate(v.sshKeys, text)
+            result = if (existing != null) {
+                existing to false
+            } else {
+                val now = nowIso()
+                val key = SSHKey(name = name.trim(), privateKey = text, createdAt = now, updatedAt = now)
+                v.sshKeys.add(key)
+                key to true
+            }
+        }
+        return result ?: (SSHKey(name = name, privateKey = text) to false)
+    }
+
+    fun renameKey(id: String, newName: String) = mutate { v ->
+        val i = v.sshKeys.indexOfFirst { it.id.equals(id, ignoreCase = true) }
+        if (i >= 0) v.sshKeys[i] = v.sshKeys[i].copy(name = newName.trim(), updatedAt = nowIso())
+    }
+
+    /** Passphrase зашифрованного ключа — ноды перестанут спрашивать её при коннекте. */
+    fun setKeyPassphrase(id: String, passphrase: String) = mutate { v ->
+        v.secrets["key:$id.passphrase"] = passphrase
+    }
+
+    /**
+     * Удаление = tombstone (deleted=true, updatedAt) + отвязка от нод (иначе повиснут битые keyID)
+     * и passphrase из секретов — как deleteKeyAndDetach мака.
+     */
+    fun deleteKeyAndDetach(id: String) = mutate { v ->
+        val now = nowIso()
+        for (j in v.sessions.indices) {
+            val s = v.sessions[j]
+            if (s.keyID?.equals(id, ignoreCase = true) == true) v.sessions[j] = s.copy(keyID = null, updatedAt = now)
+        }
+        val i = v.sshKeys.indexOfFirst { it.id.equals(id, ignoreCase = true) }
+        if (i >= 0) {
+            v.secrets.remove("key:${v.sshKeys[i].id}.passphrase")
+            v.sshKeys[i] = v.sshKeys[i].copy(deleted = true, updatedAt = now)
+        }
+    }
+
+    fun sessionsUsingKey(id: String): List<Session> =
+        data?.sessions?.filter { it.deleted != true && it.keyID?.equals(id, ignoreCase = true) == true } ?: emptyList()
+
     // ------------------------------------------------------ «Ноды 3x-ui»
 
     fun secretsSnapshot(): Map<String, String> = synchronized(this) { HashMap(data?.secrets ?: emptyMap()) }

@@ -30,7 +30,7 @@ jobs:
           set +e
           ./gradlew --no-daemon assembleDebug testDebugUnitTest \
             --tests 'org.qterm.android.xui.*' --tests 'org.qterm.android.editor.*' --tests 'org.qterm.android.ssh.*' \
-            --tests 'org.qterm.android.update.*' --tests 'org.qterm.android.qdash.*' \
+            --tests 'org.qterm.android.update.*' --tests 'org.qterm.android.qdash.*' --tests 'org.qterm.android.keys.*' \
             > build.log 2>&1
           status=$?
           tail -n 60 build.log

@@ -275,6 +275,7 @@ fun HostsScreen(
     var syncSheet by remember { mutableStateOf(false) }
     var cmdHistorySheet by remember { mutableStateOf(false) }
     var gitSheet by remember { mutableStateOf(false) }
+    var keysSheet by remember { mutableStateOf(0) }
     var aboutSheet by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Session?>(null) }
     var editingIsNew by remember { mutableStateOf(false) }
@@ -381,6 +382,14 @@ fun HostsScreen(
                             DropdownMenuItem(
                                 text = { Text("Команды Git…") },
                                 onClick = { overflow = false; gitSheet = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Ключи SSH…") },
+                                onClick = { overflow = false; keysSheet = 1 },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Ключи API…") },
+                                onClick = { overflow = false; keysSheet = 2 },
                             )
                             DropdownMenuItem(
                                 text = {
@@ -540,6 +549,12 @@ fun HostsScreen(
 
     if (gitSheet) {
         GitCommandsSheet(onInsert = null, onDismiss = { gitSheet = false })
+    }
+
+    // «Ключи SSH…» (1) / «Ключи API…» (2)
+    when (keysSheet) {
+        1 -> org.qterm.android.ui.KeysSheet(onDismiss = { keysSheet = 0 })
+        2 -> org.qterm.android.ui.ApiKeysSheet(onDismiss = { keysSheet = 0 })
     }
 
     if (aboutSheet) {
