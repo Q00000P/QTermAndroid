@@ -52,7 +52,7 @@ STORE=$(gprop qterm.release.storeFile); STORE="${STORE/#\~/$HOME}"
 if [ -z "$STORE" ] || [ ! -f "$STORE" ] || [ -z "$(gprop qterm.release.storePassword)" ]; then
     echo "⛔ Нет release-подписи (qterm.release.storeFile / storePassword в $GPROPS) — сначала ./make-android-keystore.sh"; exit 1
 fi
-[ -n "$(gprop qterm.gdriveClientIdRelease)" ] || echo "⚠️  Нет qterm.gdriveClientIdRelease — вход в Google Drive в release-сборке не заработает (README-GDRIVE.md)"
+[ -n "$(gprop qterm.gdriveClientIdRelease)$(gprop qterm.gdriveClientId)" ] || echo "⚠️  Нет qterm.gdriveClientId в $GPROPS — вход в Google Drive в этой сборке не заработает"
 
 # === Версия и сборка ===
 VERSION=$(grep -m1 'versionName' app/build.gradle.kts | cut -d'"' -f2)

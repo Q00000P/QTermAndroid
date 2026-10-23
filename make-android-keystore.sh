@@ -45,7 +45,7 @@ else
 fi
 
 echo
-echo "=== Отпечатки ключа (SHA-1 — во второй Android OAuth-клиент Google, пакет org.qterm.android) ==="
+echo "=== Отпечатки ключа (SHA-1 понадобится, только если Google не пустит release-сборку — тогда второй OAuth-клиент) ==="
 keytool -list -v -keystore "$STORE" -storepass "$PW" -alias "$ALIAS" | grep -E 'SHA1:|SHA256:' | sed 's/^[[:space:]]*/   /'
 echo
 
@@ -75,7 +75,7 @@ if [[ "$yn" =~ ^[YyДд] ]]; then
     printf '%s' "$ALIAS" | gh secret set QTERM_KEY_ALIAS -R "$CODE_REPO"
     printf '%s' "$PW" | gh secret set QTERM_KEY_PASSWORD -R "$CODE_REPO"
     echo "✅ QTERM_KEYSTORE_B64, QTERM_KEYSTORE_PASSWORD, QTERM_KEY_ALIAS, QTERM_KEY_PASSWORD → $CODE_REPO"
-    echo "   Ещё нужны (если не заданы): QTERM_UPDATE_TOKEN, QTERM_RELEASE_TOKEN, QTERM_GDRIVE_CLIENT_ID_RELEASE —"
+    echo "   Ещё нужны (если не заданы): QTERM_UPDATE_TOKEN, QTERM_RELEASE_TOKEN, QTERM_GDRIVE_CLIENT_ID_RELEASE (= твой qterm.gdriveClientId) —"
     echo "   gh secret set QTERM_UPDATE_TOKEN -R $CODE_REPO --body \"\$QTERM_UPDATE_TOKEN\""
     echo "   gh secret set QTERM_RELEASE_TOKEN -R $CODE_REPO --body \"\$QTERM_RELEASE_TOKEN\""
 fi

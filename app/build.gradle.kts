@@ -11,8 +11,9 @@ plugins {
 fun prop(name: String): String? = (project.findProperty(name) as String?)?.trim()?.takeIf { it.isNotEmpty() }
 fun env(name: String): String? = System.getenv(name)?.trim()?.takeIf { it.isNotEmpty() }
 
-// Google OAuth: Android-клиент привязан к SHA-1 подписи → у debug и release разные client id
-// (README-GDRIVE.md). Release берёт qterm.gdriveClientIdRelease, без него — общий qterm.gdriveClientId.
+// Google OAuth: вход идёт через браузер + custom URI scheme + PKCE — подпись приложения Google тут не сверяет,
+// поэтому release по умолчанию берёт тот же qterm.gdriveClientId. qterm.gdriveClientIdRelease — только если
+// Google откажет release-сборке (тогда второй Android-клиент под release-SHA-1, README-GDRIVE.md).
 val gdriveClientId = prop("qterm.gdriveClientId").orEmpty()
 val gdriveClientIdRelease = prop("qterm.gdriveClientIdRelease") ?: gdriveClientId
 fun redirectScheme(id: String) =

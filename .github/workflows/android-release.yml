@@ -7,7 +7,7 @@ name: android-release
 #   QTERM_KEYSTORE_B64, QTERM_KEYSTORE_PASSWORD, QTERM_KEY_ALIAS, QTERM_KEY_PASSWORD — release-подпись
 #   QTERM_UPDATE_TOKEN  — read-only токен QTerm-releases, вшивается в APK
 #   QTERM_RELEASE_TOKEN — токен с записью Contents в QTerm-releases, им публикуется релиз
-#   QTERM_GDRIVE_CLIENT_ID_RELEASE — (необязательно) Android OAuth client id под release-SHA-1
+#   QTERM_GDRIVE_CLIENT_ID_RELEASE — Android OAuth client id для входа в Google Drive (обычно тот же, что qterm.gdriveClientId)
 on:
   push:
     tags: ['android-*']
@@ -74,7 +74,7 @@ jobs:
         run: |
           printf 'org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\nkotlin.code.style=official\n' > gradle.properties
           if [ -n "$GDRIVE_REL" ]; then printf 'qterm.gdriveClientIdRelease=%s\n' "$GDRIVE_REL" >> gradle.properties
-          else echo "::warning::Нет QTERM_GDRIVE_CLIENT_ID_RELEASE — вход в Google Drive в этом APK не заработает"; fi
+          else echo "::warning::Нет QTERM_GDRIVE_CLIENT_ID_RELEASE — вход в Google Drive в этом APK не заработает (положи туда свой qterm.gdriveClientId)"; fi
 
       - name: Сборка release
         env:
