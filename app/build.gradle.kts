@@ -56,8 +56,8 @@ android {
         applicationId = "org.qterm.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 322
-        versionName = "3.22.0"
+        versionCode = 32201
+        versionName = "3.22.1"
 
         buildConfigField("String", "UPDATE_TOKEN", "\"$updateToken\"")
     }
