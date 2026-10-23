@@ -88,7 +88,8 @@ jobs:
           rm -f app/build/qterm-release.jks
           apk=app/build/outputs/apk/release/app-release.apk
           [ -f "$apk" ] || { echo "::error::Нет подписанного $apk"; ls app/build/outputs/apk/release/; exit 1; }
-          unzip -p "$apk" 'classes*.dex' | LC_ALL=C grep -aq "$QTERM_UPDATE_TOKEN" || { echo "::error::Токен обновлений не вшился"; exit 1; }
+          hits=$(unzip -p "$apk" 'classes*.dex' | LC_ALL=C grep -acF "$QTERM_UPDATE_TOKEN" || true)  # не -q: SIGPIPE при pipefail
+          [ "${hits:-0}" -gt 0 ] || { echo "::error::Токен обновлений не вшился"; exit 1; }
           bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           "$bt/apksigner" verify --print-certs "$apk" | grep -E 'SHA-256 digest|SHA-1 digest'
 

@@ -70,7 +70,10 @@ SRC="app/build/outputs/apk/release/app-release.apk"
 
 # токен действительно вшит (BuildConfig — строковая константа в dex)
 if command -v unzip >/dev/null 2>&1; then
-    if ! unzip -p "$SRC" 'classes*.dex' 2>/dev/null | LC_ALL=C grep -aqF "$QTERM_UPDATE_TOKEN"; then
+    # grep -c, а не -q: -q выходит на первом совпадении, unzip получает SIGPIPE (141), и при pipefail
+    # весь конвейер «падает» — именно так проверка ложно говорила «не вшит»
+    HITS=$(unzip -p "$SRC" 'classes*.dex' 2>/dev/null | LC_ALL=C grep -acF "$QTERM_UPDATE_TOKEN" || true)
+    if [ "${HITS:-0}" -eq 0 ]; then
         # что Gradle на самом деле вшил — первые 14 символов и длина (весь токен не печатаем)
         BC=$(find app/build/generated -name BuildConfig.java -path '*release*' 2>/dev/null | head -1)
         GOT=$( [ -n "$BC" ] && sed -nE 's/.*UPDATE_TOKEN = "([^"]*)".*/\1/p' "$BC" || true)
