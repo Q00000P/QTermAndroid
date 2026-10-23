@@ -92,6 +92,25 @@ object QDashCenter {
         portalOpen = true
     }
 
+    /** Портал хаба: уже открытая вкладка этого хаба — к ней, иначе новая. Служебный экран прячется. */
+    fun showPortal(hubId: String) {
+        screenOpen = false
+        val i = portalTabs.indexOfFirst { it.hubId.equals(hubId, true) }
+        if (i >= 0) { portalActive = i; portalOpen = true } else openPortal(hubId, null)
+    }
+
+    /**
+     * Вход в QDash (плитка, меню): сразу портал хаба — там карты, клиенты, роутеры, сеть, WG, правила, ноды,
+     * настройки. Хаба с ключом на этом устройстве нет — служебный экран (заведение хаба).
+     */
+    fun openQDash() {
+        val withKey = QDashStore.hubs().filter { QDashStore.key(it.id) != null }
+        val h = withKey.firstOrNull { it.id.equals(QDashPrefs.lastHub, true) } ?: withKey.firstOrNull()
+        if (h == null) { screenOpen = true; return }
+        QDashPrefs.lastHub = h.id
+        showPortal(h.id)
+    }
+
     fun closePortal(t: PortalTab) {
         val i = portalTabs.indexOf(t)
         if (i < 0) return

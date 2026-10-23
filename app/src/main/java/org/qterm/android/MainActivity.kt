@@ -72,6 +72,12 @@ class MainActivity : FragmentActivity() {
         QDashBio.attach(this)
     }
 
+    override fun onStop() {
+        super.onStop()
+        // ушли в фон — при возврате QDash снова спросит отпечаток
+        org.qterm.android.qdash.QDashGate.unlocked = false
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         VaultRepo.init(applicationContext)
@@ -148,21 +154,19 @@ fun Root() {
         return
     }
 
-    // QDash: вкладка задачи хаба → портал → экран QDash (поверх всего, как окна мака)
-    if (QDashCenter.jobOpen) {
-        val jt = QDJobs.active ?: QDJobs.tabs.lastOrNull()
-        if (jt != null) {
-            QDJobScreen(jt, onBack = { QDashCenter.jobOpen = false })
-            return
+    // QDash: портал внизу (его страницы живут, пока открыты), поверх — служебный экран, поверх — вкладка задачи
+    val qdJob = if (QDashCenter.jobOpen) QDJobs.active ?: QDJobs.tabs.lastOrNull() else null
+    if (QDashCenter.jobOpen && qdJob == null) QDashCenter.jobOpen = false
+    val qdPortal = QDashCenter.portalOpen && QDashCenter.portalTabs.isNotEmpty()
+    if (qdPortal || QDashCenter.screenOpen || qdJob != null) {
+        Box(Modifier.fillMaxSize()) {
+            if (qdPortal) {
+                QDashPortalScreen(onBack = { QDashCenter.portalOpen = false },
+                    covered = QDashCenter.screenOpen || qdJob != null)
+            }
+            if (QDashCenter.screenOpen && qdJob == null) QDashScreen(onBack = { QDashCenter.screenOpen = false })
+            if (qdJob != null) QDJobScreen(qdJob, onBack = { QDashCenter.jobOpen = false })
         }
-        QDashCenter.jobOpen = false
-    }
-    if (QDashCenter.portalOpen && QDashCenter.portalTabs.isNotEmpty()) {
-        QDashPortalScreen(onBack = { QDashCenter.portalOpen = false })
-        return
-    }
-    if (QDashCenter.screenOpen) {
-        QDashScreen(onBack = { QDashCenter.screenOpen = false })
         return
     }
 
@@ -203,7 +207,7 @@ fun Root() {
                 editorOpen = true
             },
             onXui = { xuiOpen = true },
-            onQDash = { QDashCenter.screenOpen = true },
+            onQDash = { QDashCenter.openQDash() },
         )
     }
 }

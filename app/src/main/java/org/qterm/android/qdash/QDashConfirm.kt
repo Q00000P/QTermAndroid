@@ -116,11 +116,15 @@ object QDashConfirmKey {
 object QDashGate {
     private const val gateAuth: Int = BIOMETRIC_WEAK or DEVICE_CREDENTIAL
 
+    /** Калитка пройдена — до ухода приложения в фон портал и служебный экран отпечаток не спрашивают. */
+    @Volatile var unlocked = false
+
     suspend fun check(reason: String): Boolean {
+        if (unlocked) return true
         val act = QDashBio.activity ?: return true
         if (BiometricManager.from(act).canAuthenticate(gateAuth) != BiometricManager.BIOMETRIC_SUCCESS) return true
         return try {
-            QDashBio.prompt("QDash", reason, null, gateAuth); true
+            QDashBio.prompt("QDash", reason, null, gateAuth); unlocked = true; true
         } catch (_: QDashBio.Cancelled) {
             false
         }

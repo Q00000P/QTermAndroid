@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -199,8 +200,9 @@ class QDashPortalBridge(private val hubId: String, private val hubName: String) 
 /** Экран портала: вкладки (аналог окон мака: «ещё окно», window.open со страницы), замочек E2E, обновить. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QDashPortalScreen(onBack: () -> Unit) {
-    BackHandler { onBack() }
+fun QDashPortalScreen(onBack: () -> Unit, covered: Boolean = false) {
+    // covered — поверх открыт служебный экран или задача: страницы живут (не перезагружаются), но скрыты
+    BackHandler(enabled = !covered) { onBack() }
     val tabs = QDashCenter.portalTabs
     if (tabs.isEmpty()) { LaunchedEffect(Unit) { onBack() }; return }
     val idx = QDashCenter.portalActive.coerceIn(0, tabs.lastIndex)
@@ -209,7 +211,7 @@ fun QDashPortalScreen(onBack: () -> Unit) {
     val client = QDashCenter.clientFor(tab.hubId)
     var lastLog by remember { mutableStateOf("") }
     var lockInfo by remember { mutableStateOf(false) }
-    var gate by remember(tab.hubId) { mutableStateOf(!QDashPrefs.gateOnOpen) }
+    var gate by remember(tab.hubId) { mutableStateOf(!QDashPrefs.gateOnOpen || QDashGate.unlocked) }
     LaunchedEffect(tab.hubId) { if (!gate) gate = QDashGate.check("открыть портал QDash") }
 
     // сохранение файлов со страницы (blob: → «Сохранить как»)
@@ -253,6 +255,10 @@ fun QDashPortalScreen(onBack: () -> Unit) {
                 }
             }
             IconButton(onClick = { QDashCenter.openPortal(tab.hubId, null) }) { Icon(Icons.Default.Add, "Ещё вкладка") }
+            // служебное QTerm: ключ устройства, шифрование, точки входа, ключ подтверждения, секундант, задачи вкладкой терминала
+            IconButton(onClick = { QDashUi.model.select(tab.hubId); QDashCenter.screenOpen = true }) {
+                Icon(Icons.Default.Tune, "Устройство, ключи, задачи")
+            }
             IconButton(onClick = { tab.reload++ }) { Icon(Icons.Default.Refresh, "Обновить") }
         }
         if (tabs.size > 1) {
@@ -283,7 +289,7 @@ fun QDashPortalScreen(onBack: () -> Unit) {
                     // все вкладки живут (страница не перезагружается при переключении); видна активная
                     tabs.forEachIndexed { i, t ->
                         key(t.n) {
-                            PortalWebView(t, hub?.display ?: "", visible = i == idx,
+                            PortalWebView(t, hub?.display ?: "", visible = i == idx && !covered,
                                 onLog = { lastLog = it }, onSave = { n, txt -> pendingSave = n to txt })
                         }
                     }

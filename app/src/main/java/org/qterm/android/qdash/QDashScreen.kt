@@ -18,7 +18,6 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -58,7 +57,7 @@ object QDashUi {
 fun QDashScreen(onBack: () -> Unit) {
     val m = QDashUi.model
     BackHandler { onBack() }
-    var gate by remember { mutableStateOf(!QDashPrefs.gateOnOpen) }
+    var gate by remember { mutableStateOf(!QDashPrefs.gateOnOpen || QDashGate.unlocked) }
     LaunchedEffect(Unit) { if (!gate) gate = QDashGate.check("открыть QDash") }
 
     if (!gate) {
@@ -110,8 +109,8 @@ fun QDashScreen(onBack: () -> Unit) {
                                 tint = if (m.lockOk) Color(0xFF66BB6A) else Color(0xFFFFA726))
                         }
                     }
-                    IconButton(enabled = m.client != null, onClick = { m.sel?.let { QDashCenter.openPortal(it.id, null) } }) {
-                        Icon(Icons.Default.OpenInNew, "Портал")
+                    TextButton(enabled = m.client != null, onClick = { m.sel?.let { QDashCenter.showPortal(it.id) } }) {
+                        Text("Портал")
                     }
                     IconButton(onClick = { XuiCenter.launch { m.refresh(addr = true) } }) { Icon(Icons.Default.Refresh, "Обновить") }
                     var menu by remember { mutableStateOf(false) }
