@@ -36,6 +36,17 @@ class LocalVaultStore(private val context: Context) {
         return VaultJson.decodeFromString(VaultData.serializer(), json)
     }
 
+    /** vault.bin не расшифровался — отложить как vault.bin.unreadable-<время> (+ причина), чтобы save его не затёр. */
+    fun quarantine(e: Throwable) {
+        val f = file
+        if (!f.exists()) return
+        val ts = java.time.LocalDateTime.now().toString().replace(':', '-').take(19)
+        runCatching {
+            f.copyTo(File(context.filesDir, "vault.bin.unreadable-$ts"), overwrite = true)
+            File(context.filesDir, "vault.bin.unreadable-$ts.txt").writeText("${e.javaClass.name}: ${e.message}\n")
+        }
+    }
+
     fun save(vault: VaultData) {
         vault.updatedAt = nowIso()
         val json = VaultJson.encodeToString(VaultData.serializer(), vault).toByteArray(Charsets.UTF_8)

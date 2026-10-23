@@ -54,7 +54,12 @@ object VaultRepo {
     suspend fun loadIfNeeded() {
         if (data != null) return
         val v = withContext(Dispatchers.IO) {
-            runCatching { store.load() }.getOrElse { VaultData() }
+            runCatching { store.load() }.getOrElse { e ->
+                // файл есть, но не читается (чужой ключ Keystore, порча) — не затираем его пустым вейлтом молча:
+                // откладываем копию рядом и стартуем пустыми, данные вернёт синк
+                store.quarantine(e)
+                VaultData()
+            }
         }
         val dirty = synchronized(this) { sanitizeJournals(v) > 0 }
         if (dirty) runCatching { store.save(v) }
