@@ -25,6 +25,11 @@ gprop() { # свойство из ~/.gradle/gradle.properties
 QTERM_UPDATE_TOKEN=$(zshvar QTERM_UPDATE_TOKEN)
 [ -n "$QTERM_UPDATE_TOKEN" ] || QTERM_UPDATE_TOKEN=$(gprop qterm.updateToken)
 QTERM_RELEASE_TOKEN=$(zshvar QTERM_RELEASE_TOKEN)
+# Gradle вшивает токен только из [A-Za-z0-9_] (build.gradle.kts) — чистим так же здесь, чтобы проверка
+# «токен вшит» и сборка видели одну и ту же строку (лишний \r, пробел или кавычки из ~/.zshenv)
+RAW_LEN=${#QTERM_UPDATE_TOKEN}
+QTERM_UPDATE_TOKEN=$(printf '%s' "$QTERM_UPDATE_TOKEN" | tr -cd 'A-Za-z0-9_')
+[ "$RAW_LEN" -eq "${#QTERM_UPDATE_TOKEN}" ] || echo "⚠️  В QTERM_UPDATE_TOKEN лишние символы ($RAW_LEN → ${#QTERM_UPDATE_TOKEN}): кавычки/пробел/\\r в ~/.zshenv — вшиваю очищенный"
 export QTERM_UPDATE_TOKEN
 
 # === Токен обновлений: без него установленные копии не увидят эту версию — релиз не собираем ===
@@ -65,8 +70,16 @@ SRC="app/build/outputs/apk/release/app-release.apk"
 
 # токен действительно вшит (BuildConfig — строковая константа в dex)
 if command -v unzip >/dev/null 2>&1; then
-    if ! unzip -p "$SRC" 'classes*.dex' 2>/dev/null | LC_ALL=C grep -aq "$QTERM_UPDATE_TOKEN"; then
-        echo "⛔ В APK не нашёлся токен обновлений — не вшился"; exit 1
+    if ! unzip -p "$SRC" 'classes*.dex' 2>/dev/null | LC_ALL=C grep -aqF "$QTERM_UPDATE_TOKEN"; then
+        # что Gradle на самом деле вшил — первые 14 символов и длина (весь токен не печатаем)
+        BC=$(find app/build/generated -name BuildConfig.java -path '*release*' 2>/dev/null | head -1)
+        GOT=$( [ -n "$BC" ] && sed -nE 's/.*UPDATE_TOKEN = "([^"]*)".*/\1/p' "$BC" || true)
+        echo "⛔ В APK не нашёлся токен обновлений"
+        echo "   в окружении: ${QTERM_UPDATE_TOKEN:0:14}… (${#QTERM_UPDATE_TOKEN} симв.)"
+        if [ -n "$BC" ]; then echo "   вшито Gradle: ${GOT:0:14}… (${#GOT} симв.) — $BC"
+        else echo "   BuildConfig.java не найден в app/build/generated"; fi
+        [ -n "$(gprop qterm.updateToken)" ] && echo "   ⚠️  в $GPROPS есть qterm.updateToken — он главнее переменной окружения"
+        exit 1
     fi
 fi
 # подпись — сверка с keystore (если есть apksigner из SDK)
