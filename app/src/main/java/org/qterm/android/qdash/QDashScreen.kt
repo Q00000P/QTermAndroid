@@ -728,9 +728,10 @@ fun QDashPushSheet(client: QDashClient, sessions: List<Session>, hubIds: Set<Str
                                     "user" to r.s.username.ifEmpty { "root" }, "auth" to "hubkey", "hostkey" to hostkeyPin(r.s),
                                     "kind" to (if (r.router) "router" else ""), "note" to "из QTerm",
                                 )
-                                // SSH внутри TLS: поле tls — только если у ноды режим не off
-                                val tls = org.qterm.android.ssh.TlsConf.of((org.qterm.android.vault.VaultRepo.session(r.s.id) ?: r.s).extra)
-                                val body = if (tls.on) kotlinx.serialization.json.JsonObject(base + ("tls" to QDashTls.toHub(tls))) else base
+                                // SSH внутри TLS: поле tls — если у ноды есть tls.mode (в т.ч. off — чтобы хаб тоже выключил)
+                                val ex = (org.qterm.android.vault.VaultRepo.session(r.s.id) ?: r.s).extra
+                                val tls = org.qterm.android.ssh.TlsConf.of(ex)
+                                val body = if (ex.containsKey("tls.mode")) kotlinx.serialization.json.JsonObject(base + ("tls" to QDashTls.toHub(tls))) else base
                                 val tlsNote = if (tls.on) " · TLS ${tls.mode} ${tls.sni}:${tls.port}" else ""
                                 val res = client.post("/api/vps/save", body)
                                 val J = org.qterm.android.xui.J
