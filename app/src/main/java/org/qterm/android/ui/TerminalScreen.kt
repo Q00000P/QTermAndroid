@@ -9,6 +9,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Folder
@@ -73,6 +75,8 @@ fun TerminalScreen(
     var gitOpen by remember { mutableStateOf(false) }
     var monitorOpen by remember { mutableStateOf(false) }
     val retryIn by controller.reconnectIn.collectAsState()
+    // путь ноды с TLS: «TLS 443» / «напрямую :22» (у ноды без tls.* — null, шапка как раньше)
+    val route by controller.route.collectAsState()
     val ctx = LocalContext.current
     LaunchedEffect(Unit) { MonitorPrefs.load(ctx) }
 
@@ -143,7 +147,7 @@ fun TerminalScreen(
             Box {
                 TextButton(onClick = { menuOpen = true }) {
                     Text(
-                        "${session.name} ▾  ·  ${statusLabel(st)}",
+                        "${session.name} ▾  ·  ${statusLabel(st)}" + (route?.let { "  ·  $it" } ?: ""),
                         color = Color(0xFFBBBBBB),
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -151,9 +155,10 @@ fun TerminalScreen(
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     TermRegistry.all().forEach { o ->
                         val oSt by o.controller.state.collectAsState()
+                        val oRoute by o.controller.route.collectAsState()
                         val oName = VaultRepo.session(o.session.id)?.name ?: o.session.name
                         DropdownMenuItem(
-                            text = { Text("${if (o.session.id == session.id) "● " else ""}$oName — ${statusLabel(oSt)}") },
+                            text = { Text("${if (o.session.id == session.id) "● " else ""}$oName — ${statusLabel(oSt)}" + (oRoute?.let { " · $it" } ?: "")) },
                             onClick = {
                                 menuOpen = false
                                 if (o.session.id != session.id) onSwitch(o.session.id)
@@ -389,7 +394,8 @@ fun TerminalScreen(
         is TermState.Failed -> AlertDialog(
             onDismissRequest = onDisconnect,
             title = { Text("Ошибка подключения") },
-            text = { Text(s.message) },
+            // текст ошибки (TLS: пины, первые байты ответа) — выделяется и копируется
+            text = { SelectionContainer { Text(s.message, modifier = Modifier.verticalScroll(rememberScrollState())) } },
             confirmButton = { TextButton(onClick = onDisconnect) { Text("Закрыть") } },
         )
         else -> {}

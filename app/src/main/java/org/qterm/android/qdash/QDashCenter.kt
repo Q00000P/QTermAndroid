@@ -56,6 +56,14 @@ object QDashCenter {
         return client(h, k)
     }
 
+    /** Текущий хаб (последний выбранный с ключом этого устройства, иначе первый с ключом) и его клиент; null — таких нет. */
+    fun activeClient(): Pair<QDashHub, QDashClient>? {
+        val withKey = QDashStore.hubs().filter { QDashStore.key(it.id) != null }
+        val h = withKey.firstOrNull { it.id.equals(QDashPrefs.lastHub, true) } ?: withKey.firstOrNull() ?: return null
+        val k = QDashStore.key(h.id) ?: return null
+        return h to client(h, k)
+    }
+
     @Synchronized
     fun drop(id: String) { clients.remove(id.uppercase()) }
 

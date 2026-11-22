@@ -32,6 +32,10 @@ data class ConnParams(
     val keyPassphrase: String?,
     val storedPassword: String?,
     val knownHostKeyB64: String?,
+    /** id ноды — ключ запомненного пути (TLS / напрямую) в режиме auto. */
+    val sessionId: String = "",
+    /** SSH внутри TLS (extra tls.*); NONE — как раньше, напрямую. */
+    val tls: TlsConf = TlsConf.NONE,
 )
 
 /**
@@ -43,6 +47,7 @@ data class ConnParams(
  * пароль», «Сбросить доверие» применяются при переподключении.
  * Обрыв → авто-реконнект с бэкоффом 2-4-8-16-30с (как на маке/винде),
  * эмулятор не пересоздаётся — экран и скроллбек остаются.
+ * Нода с tls.mode auto/only — SSH внутри TLS через мост TlsBridge (каждый коннект — свой мост).
  */
 class TerminalController(
     private val params: () -> ConnParams,
@@ -56,8 +61,14 @@ class TerminalController(
     private val _reconnectIn = MutableStateFlow<Int?>(null)
     val reconnectIn: StateFlow<Int?> = _reconnectIn
 
+    /** Каким путём подключено: «TLS 443» / «напрямую :22»; null — нода без TLS (шапка как раньше). */
+    private val _route = MutableStateFlow<String?>(null)
+    val route: StateFlow<String?> = _route
+
     private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "ssh-io") }
     private var conn: Connection? = null
+    /** Мост TLS текущего коннекта (null — напрямую). */
+    private var bridge: TlsBridge.Bridge? = null
     private var shell: com.trilead.ssh2.Session? = null
     private var stdin: OutputStream? = null
     private var emulator: TerminalEmulator? = null
@@ -147,29 +158,7 @@ class TerminalController(
         val p = params()
         cur = p
         try {
-            banner("Подключение к ${p.username}@${p.host}:${p.port}…")
-            val c = Connection(p.host, p.port)
-            conn = c
-
-            val verifier = ServerHostKeyVerifier { _, _, algo, key ->
-                val b64 = Base64.getEncoder().encodeToString(key)
-                when (p.knownHostKeyB64) {
-                    null -> {
-                        persistHostKey(b64)
-                        banner("Первый контакт: ключ хоста $algo ${fingerprint(key)} сохранён")
-                        true
-                    }
-                    b64 -> true
-                    else -> {
-                        _state.value = TermState.HostKeyMismatch(
-                            expected = fingerprint(Base64.getDecoder().decode(p.knownHostKeyB64)),
-                            actual = fingerprint(key),
-                        )
-                        false
-                    }
-                }
-            }
-            c.connect(verifier, 15_000, 30_000)
+            val c = dial(p)
 
             var authed = false
             if (p.keyPem != null) {
@@ -196,13 +185,118 @@ class TerminalController(
             if (closed || _state.value is TermState.HostKeyMismatch) return
             if (auto) {
                 // обрыв во время авто-попытки — не ошибка, а следующая попытка
-                banner("Нет связи: ${e.message ?: e}")
+                banner("Нет связи: ${oneLine(e.message ?: e.toString())}")
                 dropped()
             } else {
                 _state.value = TermState.Failed(e.message ?: e.toString())
             }
         }
     }
+
+    private fun verifier(p: ConnParams) = ServerHostKeyVerifier { _, _, algo, key ->
+        val b64 = Base64.getEncoder().encodeToString(key)
+        when (p.knownHostKeyB64) {
+            null -> {
+                persistHostKey(b64)
+                banner("Первый контакт: ключ хоста $algo ${fingerprint(key)} сохранён")
+                true
+            }
+            b64 -> true
+            else -> {
+                _state.value = TermState.HostKeyMismatch(
+                    expected = fingerprint(Base64.getDecoder().decode(p.knownHostKeyB64)),
+                    actual = fingerprint(key),
+                )
+                false
+            }
+        }
+    }
+
+    /**
+     * TCP+SSH-рукопожатие выбранным путём. tls.mode off — как раньше, напрямую.
+     * only — только TLS (и при реконнекте). auto — сначала путь, что сработал последним
+     * (в этом процессе), потом другой; на другой переходим ТОЛЬКО при отказе транспорта,
+     * ключ хоста и вход не перебираются.
+     */
+    private fun dial(p: ConnParams): Connection {
+        val t = p.tls
+        if (!t.on) {
+            _route.value = null
+            return dialDirect(p, tlsOn = false)
+        }
+        val key = p.sessionId.uppercase()
+        val order = when {
+            t.mode == TlsConf.ONLY -> listOf(PATH_TLS)
+            lastPath[key] == PATH_DIRECT -> listOf(PATH_DIRECT, PATH_TLS)
+            else -> listOf(PATH_TLS, PATH_DIRECT)
+        }
+        val fails = mutableListOf<String>()
+        var last: Exception? = null
+        for ((i, path) in order.withIndex()) {
+            try {
+                val c = if (path == PATH_TLS) dialTls(p) else dialDirect(p, tlsOn = true)
+                if (key.isNotEmpty()) lastPath[key] = path
+                return c
+            } catch (e: Exception) {
+                val transport = e is TlsBridgeException || (path == PATH_DIRECT && directTransportFailure(e))
+                if (closed || !transport || _state.value is TermState.HostKeyMismatch) throw e
+                dropTransport()
+                last = e
+                val msg = e.message ?: e.toString()
+                fails += (if (path == PATH_TLS) "TLS ${p.host}:${t.port}: " else "напрямую :${p.port}: ") + msg
+                if (i + 1 < order.size) {
+                    banner(
+                        if (path == PATH_TLS) "TLS не вышел: ${oneLine(msg)} — пробую напрямую :${p.port}"
+                        else "Напрямую не вышло: ${oneLine(msg)} — пробую через TLS :${t.port}",
+                    )
+                }
+            }
+        }
+        if (fails.size == 1 && last != null) throw last
+        throw java.io.IOException("Не подключиться ни через TLS, ни напрямую:\n\n" + fails.joinToString("\n\n"))
+    }
+
+    private fun dialDirect(p: ConnParams, tlsOn: Boolean): Connection {
+        banner(
+            if (tlsOn) "Подключение к ${p.username}@${p.host}:${p.port} напрямую…"
+            else "Подключение к ${p.username}@${p.host}:${p.port}…",
+        )
+        val c = Connection(p.host, p.port)
+        conn = c
+        c.connect(verifier(p), 15_000, 30_000)
+        if (tlsOn) _route.value = "напрямую :${p.port}"
+        return c
+    }
+
+    private fun dialTls(p: ConnParams): Connection {
+        val t = p.tls
+        val sni = t.sni.ifEmpty { p.host }
+        banner("Подключение к ${p.username}@${p.host} через TLS ${p.host}:${t.port} (SNI $sni)…")
+        val b = TlsBridge.open(p.host, t.port, sni, t.pin)
+        bridge = b
+        // ssh поверх моста: ключ хоста — тот же TOFU по extra["hostkey"] ноды
+        val c = Connection("127.0.0.1", b.port)
+        conn = c
+        c.connect(verifier(p), 15_000, 30_000)
+        _route.value = "TLS ${t.port}"
+        return c
+    }
+
+    /** Прямой путь не дошёл до SSH (нет TCP / таймаут / нет имени / нет маршрута) — можно пробовать TLS. */
+    private fun directTransportFailure(e: Throwable): Boolean =
+        generateSequence(e) { it.cause }.take(8).any {
+            it is java.net.ConnectException || it is java.net.SocketTimeoutException ||
+                it is java.net.UnknownHostException || it is java.net.NoRouteToHostException
+        }
+
+    private fun dropTransport() {
+        runCatching { conn?.close() }
+        conn = null
+        runCatching { bridge?.close() }
+        bridge = null
+    }
+
+    private fun oneLine(s: String): String = s.replace("\r", "").replace("\n", " · ")
 
     fun submitPassword(pw: String) {
         _state.value = TermState.Connecting
@@ -358,9 +452,11 @@ class TerminalController(
         shellGen++ // старый читающий поток больше не трогает состояние
         runCatching { shell?.close() }
         runCatching { conn?.close() }
+        runCatching { bridge?.close() }
         shell = null
         stdin = null
         conn = null
+        bridge = null
         ptyStarted = false
         closed = false
         userClosed = false
@@ -382,6 +478,7 @@ class TerminalController(
         exec.execute {
             try { shell?.close() } catch (_: Exception) {}
             try { conn?.close() } catch (_: Exception) {}
+            try { bridge?.close() } catch (_: Exception) {}
         }
         exec.shutdown()
     }
@@ -394,4 +491,12 @@ class TerminalController(
     private fun fingerprint(key: ByteArray): String =
         "SHA256:" + Base64.getEncoder().withoutPadding()
             .encodeToString(MessageDigest.getInstance("SHA-256").digest(key))
+
+    private companion object {
+        const val PATH_TLS = "tls"
+        const val PATH_DIRECT = "direct"
+
+        /** auto: удачный путь ноды (id → tls/direct) на время работы процесса — при реконнекте первым. */
+        val lastPath = java.util.concurrent.ConcurrentHashMap<String, String>()
+    }
 }

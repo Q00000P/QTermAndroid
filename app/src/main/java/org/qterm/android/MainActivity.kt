@@ -13,6 +13,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -286,6 +289,32 @@ fun HostsScreen(
     var confirmDelete by remember { mutableStateOf<Session?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    // «Взять настройки TLS с хаба»: идёт запрос / отчёт по нодам
+    var tlsBusy by remember { mutableStateOf(false) }
+    var tlsReport by remember { mutableStateOf<String?>(null) }
+
+    fun pullTls(targets: List<Session>) {
+        val hc = QDashCenter.activeClient()
+        if (hc == null) {
+            tlsReport = "Нет хаба QDash с ключом этого устройства — заведи хаб в QDash."
+            return
+        }
+        val (hub, client) = hc
+        tlsBusy = true
+        scope.launch {
+            val text = try {
+                "Хаб «${hub.display}», нод: ${targets.size}\n\n" +
+                    org.qterm.android.qdash.QDashTls.pull(client, targets).joinToString("\n")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                tlsBusy = false
+                throw e
+            } catch (e: Exception) {
+                "✗ хаб «${hub.display}»: ${e.message ?: e}"
+            }
+            tlsBusy = false
+            tlsReport = text
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) pendingUri = uri
@@ -374,6 +403,12 @@ fun HostsScreen(
                             DropdownMenuItem(
                                 text = { Text("Нода из выделения (3x-ui / AWG)") },
                                 onClick = { overflow = false; XuiCenter.requestNodeAdd(XuiCenter.clipboardText()) },
+                            )
+                            DropdownMenuItem(
+                                // массово: все ноды (или найденные поиском)
+                                text = { Text(if (query.isBlank()) "Взять настройки TLS с хаба — все ноды" else "Взять настройки TLS с хаба — найденные (${visible.size})") },
+                                enabled = visible.isNotEmpty() && !tlsBusy,
+                                onClick = { overflow = false; pullTls(visible) },
                             )
                             DropdownMenuItem(
                                 text = { Text("Синхронизация…") },
@@ -482,6 +517,7 @@ fun HostsScreen(
                 if (TermRegistry.isOpen(s.id)) {
                     SheetAction("Отключить") { menuFor = null; TermRegistry.close(s.id) }
                 }
+                SheetAction("Взять настройки TLS с хаба") { menuFor = null; pullTls(listOf(s)) }
                 if (VaultRepo.hasPassword(s.id)) {
                     SheetAction("Забыть пароль") {
                         menuFor = null
@@ -544,6 +580,35 @@ fun HostsScreen(
                 }) { Text("Удалить", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Отмена") } },
+        )
+    }
+
+    if (tlsBusy) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("TLS с хаба") },
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(24.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Запрашиваю список серверов хаба…")
+                }
+            },
+            confirmButton = {},
+        )
+        // хаб может спросить код 2FA — диалоги XuiCenter нужны и здесь
+        org.qterm.android.xui.XuiDialogHost()
+    }
+    tlsReport?.let { r ->
+        AlertDialog(
+            onDismissRequest = { tlsReport = null },
+            title = { Text("Настройки TLS с хаба") },
+            text = {
+                SelectionContainer {
+                    Text(r, modifier = Modifier.verticalScroll(rememberScrollState()))
+                }
+            },
+            confirmButton = { TextButton(onClick = { tlsReport = null }) { Text("OK") } },
         )
     }
 

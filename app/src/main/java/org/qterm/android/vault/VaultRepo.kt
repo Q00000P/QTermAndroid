@@ -108,6 +108,23 @@ object VaultRepo {
         }
     }
 
+    /** Правка extra ноды функцией (TLS с хаба): updatedAt и синк — только если extra изменился. Возвращает true, если изменён. */
+    fun editSessionExtra(id: String, f: (Map<String, String>) -> Map<String, String>): Boolean {
+        var changed = false
+        mutate { v ->
+            val i = v.sessions.indexOfFirst { it.id.equals(id, ignoreCase = true) }
+            if (i >= 0) {
+                val cur = v.sessions[i].extra
+                val n = f(cur)
+                if (n != cur) {
+                    v.sessions[i] = v.sessions[i].copy(extra = n, updatedAt = nowIso())
+                    changed = true
+                }
+            }
+        }
+        return changed
+    }
+
     /** Сброс доверия TOFU — убрать сохранённый ключ хоста. */
     fun resetHostKey(id: String) = mutate { v ->
         val i = v.sessions.indexOfFirst { it.id.equals(id, ignoreCase = true) }

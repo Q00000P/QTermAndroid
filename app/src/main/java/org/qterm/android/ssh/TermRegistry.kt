@@ -66,6 +66,8 @@ object TermRegistry {
                     keyPassphrase = s.keyID?.let { v.secrets["key:$it.passphrase"] },
                     storedPassword = v.secrets["$id.password"],
                     knownHostKeyB64 = s.extra["hostkey"],
+                    sessionId = id,
+                    tls = TlsConf.of(s.extra),
                 )
             },
             persistHostKey = { VaultRepo.persistHostKey(id, it) },

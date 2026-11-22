@@ -723,18 +723,22 @@ fun QDashPushSheet(client: QDashClient, sessions: List<Session>, hubIds: Set<Str
                             lines += "✓ ${r.s.name}: ключ хаба ${if (outp.contains("QD_ADDED")) "дописан" else "уже был"} в authorized_keys" to LogKind.OK
                             status = "$n/${sel.size}: ${r.s.name} — в хаб…"
                             try {
-                                val body = org.qterm.android.xui.J.body(
+                                val base = org.qterm.android.xui.J.body(
                                     "id" to r.s.id.uppercase(), "name" to r.s.name, "host" to r.s.host, "port" to r.s.port,
                                     "user" to r.s.username.ifEmpty { "root" }, "auth" to "hubkey", "hostkey" to hostkeyPin(r.s),
                                     "kind" to (if (r.router) "router" else ""), "note" to "из QTerm",
                                 )
+                                // SSH внутри TLS: поле tls — только если у ноды режим не off
+                                val tls = org.qterm.android.ssh.TlsConf.of((org.qterm.android.vault.VaultRepo.session(r.s.id) ?: r.s).extra)
+                                val body = if (tls.on) kotlinx.serialization.json.JsonObject(base + ("tls" to QDashTls.toHub(tls))) else base
+                                val tlsNote = if (tls.on) " · TLS ${tls.mode} ${tls.sni}:${tls.port}" else ""
                                 val res = client.post("/api/vps/save", body)
                                 val J = org.qterm.android.xui.J
                                 val ok = J.bool(res, "ok"); val reach = J.bool(res, "reachable"); val err = J.str(res, "error")
                                 when {
                                     !ok -> lines += "✗ ${r.s.name}: хаб не принял — $err" to LogKind.ERR
-                                    reach -> { lines += "✓ ${r.s.name}: в хабе, хаб подключился сам" to LogKind.OK; pushed++ }
-                                    else -> { lines += "! ${r.s.name}: в хабе, но хаб не подключился: $err" to LogKind.WARN; pushed++ }
+                                    reach -> { lines += "✓ ${r.s.name}: в хабе, хаб подключился сам$tlsNote" to LogKind.OK; pushed++ }
+                                    else -> { lines += "! ${r.s.name}: в хабе, но хаб не подключился: $err$tlsNote" to LogKind.WARN; pushed++ }
                                 }
                             } catch (e: Exception) {
                                 lines += "✗ ${r.s.name}: /api/vps/save — ${e.message}" to LogKind.ERR

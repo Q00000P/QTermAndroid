@@ -351,6 +351,12 @@ class QDashModel {
             )
         }
         serversStatus = "серверов: ${servers.size}, на связи: ${servers.count { it.dot == QD_GREEN }}"
+        // SSH внутри TLS: tls сервера хаба → extra ноды QTerm (нет поля — старый хаб, не трогаем)
+        for (v in serverObjs) {
+            val t = QDashTls.fromHub(v) ?: continue
+            val s = QDashTls.sessionFor(v, sessions) ?: continue
+            QDashTls.apply(s, t)?.let { log("✓ ${s.name}: TLS с хаба — $it", LogKind.OK) }
+        }
     }
 
     val hubServerIds: Set<String> get() = serverObjs.map { J.str(it, "id").uppercase() }.toSet()
