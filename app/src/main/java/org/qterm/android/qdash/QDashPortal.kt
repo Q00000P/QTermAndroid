@@ -157,7 +157,8 @@ class QDashPortalBridge(private val hubId: String, private val hubName: String) 
         val s = String(html, Charsets.UTF_8)
         val i = Regex("<head[^>]*>", RegexOption.IGNORE_CASE).find(s)?.range?.last?.plus(1)
             ?: Regex("<html[^>]*>", RegexOption.IGNORE_CASE).find(s)?.range?.last?.plus(1) ?: 0
-        return (s.substring(0, i) + SHIM + s.substring(i)).toByteArray(Charsets.UTF_8)
+        // прокладка + window.qtermVault (публичные ключи вейлта; без qtermVaultNative сама не определится)
+        return (s.substring(0, i) + SHIM + QD_VAULT_JS + s.substring(i)).toByteArray(Charsets.UTF_8)
     }
 
     fun intercept(req: WebResourceRequest): WebResourceResponse? {
@@ -324,6 +325,8 @@ private fun PortalWebView(t: QDashCenter.PortalTab, hubName: String, visible: Bo
         }
     }
     bridge.onSave = { n, txt -> android.os.Handler(android.os.Looper.getMainLooper()).post { onSave(n, txt) } }
+    val vault = remember(t.n) { QDashVaultBridge() }
+    vault.onLog = { s -> android.os.Handler(android.os.Looper.getMainLooper()).post { onLog(s) } }
     var fullView by remember { mutableStateOf<View?>(null) }
     var lastReload by remember(t.n) { mutableIntStateOf(t.reload) }
 
@@ -340,6 +343,9 @@ private fun PortalWebView(t: QDashCenter.PortalTab, hubName: String, visible: Bo
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 addJavascriptInterface(bridge, "QDBridge")
+                // публичные ключи вейлта — только этому WebView портала (ответ проверяет URL страницы)
+                vault.web = java.lang.ref.WeakReference(this)
+                addJavascriptInterface(vault, "qtermVaultNative")
                 webViewClient = object : WebViewClient() {
                     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                         bridge.intercept(request) ?: WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", emptyMap(),
